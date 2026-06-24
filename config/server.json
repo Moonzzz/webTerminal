@@ -1,0 +1,25 @@
+{
+  "server": {
+    "hostname": "${WEBTERMINAL_HOSTNAME:0.0.0.0}",
+    "port": "${PORT:3000}"
+  },
+  "auth": {
+    "username": "${WEBTERMINAL_AUTH_USERNAME:admin}",
+    "password": "${WEBTERMINAL_AUTH_PASSWORD:webTerminal}",
+    "sessionSecret": "${WEBTERMINAL_AUTH_SECRET:change-me-in-production}",
+    "sessionTtlMinutes": 720,
+    "failedAttemptLimit": 5,
+    "lockMinutes": 30,
+    "secureCookie": "${WEBTERMINAL_SECURE_COOKIE:false}"
+  },
+  "ssh": {
+    "allowedTargets": "${WEBTERMINAL_ALLOWED_TARGETS:localhost:2022,localhost:22}",
+    "resumeTtlMs": 300000,
+    "replayBufferBytes": 524288,
+    "keepaliveIntervalMs": 20000,
+    "keepaliveCountMax": 3
+  },
+  "websocket": {
+    "heartbeatIntervalMs": 20000
+  }
+}
