@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { FormEvent, TouchEvent as ReactTouchEvent } from 'react';
 import type { ITerminalAddon, Terminal as XTermTerminal } from '@xterm/xterm';
 import {
   decryptSecurePayload,
@@ -9,6 +9,29 @@ import {
   ensureSecureSession,
   type SecureSession,
 } from '@/lib/secure-channel';
+import { MobileTerminalToolbar } from './terminal/MobileTerminalToolbar';
+import { TerminalCopyOverlay } from './terminal/TerminalCopyOverlay';
+import { getDefaultShortcutItems, getShortcutItemKey, resolveShortcutInput } from './terminal/shortcut-actions';
+import {
+  normalizeCustomShortcutDraft,
+  readStoredShortcutItems,
+  writeStoredShortcutItems,
+} from './terminal/shortcut-storage';
+import { readTerminalBufferText } from './terminal/terminal-buffer';
+import { focusTerminal } from './terminal/terminal-focus';
+import { registerOsc52ClipboardHandler } from './terminal/osc52-clipboard';
+import {
+  isMobileTerminalTouch,
+  setupMobileTouchScroll,
+  shouldIgnoreTouchTarget,
+} from './terminal/touch-scroll';
+import type {
+  BuiltInShortcutItem,
+  ServerMessage,
+  ShortcutActionId,
+  ShortcutItem,
+  TerminalTarget,
+} from './terminal/types';
 
 const TARGET_STORAGE_KEY = 'webTerminal-custom-node';
 const SESSION_STORAGE_PREFIX = 'webTerminal-terminal-session:';
@@ -16,29 +39,13 @@ const CLIENT_KEEPALIVE_MS = 20_000;
 const INPUT_FLUSH_MS = 16;
 const MAX_INPUT_BUFFER_CHARS = 64 * 1024;
 const MAX_WS_BUFFERED_AMOUNT = 256 * 1024;
-const OSC_52_CLIPBOARD = 52;
-const MAX_OSC_52_CLIPBOARD_CHARS = 1024 * 1024;
-
-type TerminalTarget = {
-  host: string;
-  port: number;
-  username: string;
-  password?: string;
-  name?: string;
-};
+const COPY_MODE_LONG_PRESS_MS = 520;
+const COPY_MODE_MOVE_TOLERANCE_PX = 10;
 
 type Props = {
   nodeName: string;
   useStoredTarget?: boolean;
 };
-
-type ServerMessage =
-  | { type: 'ready' }
-  | { type: 'session'; sessionId: string; resumed?: boolean }
-  | { type: 'status'; message: string }
-  | { type: 'error'; message: string }
-  | { type: 'output'; data: string }
-  | { type: 'pong'; ts: number };
 
 export default function TerminalClient({
   nodeName,
@@ -48,11 +55,23 @@ export default function TerminalClient({
   const termRef = useRef<XTermTerminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<(ITerminalAddon & { fit: () => void }) | null>(null);
+  const pasteInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const copyLongPressTimerRef = useRef<number | undefined>(undefined);
+  const copyLongPressStartRef = useRef<{ x: number; y: number } | undefined>(undefined);
   const [storedTarget, setStoredTarget] = useState<TerminalTarget | undefined>();
   const [storageLoaded, setStorageLoaded] = useState(!useStoredTarget);
   const [passwordInput, setPasswordInput] = useState('');
   const [sshPassword, setSshPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [shortcutItems, setShortcutItems] = useState<ShortcutItem[]>(getDefaultShortcutItems);
+  const [shortcutEditorOpen, setShortcutEditorOpen] = useState(false);
+  const [pastePanelOpen, setPastePanelOpen] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const [customShortcutLabel, setCustomShortcutLabel] = useState('');
+  const [customShortcutInput, setCustomShortcutInput] = useState('');
+  const [customShortcutError, setCustomShortcutError] = useState('');
+  const [copyModeOpen, setCopyModeOpen] = useState(false);
+  const [copyModeText, setCopyModeText] = useState('');
   const sessionTarget = useMemo(() => {
     const base = storedTarget;
     if (!base) return undefined;
@@ -70,6 +89,16 @@ export default function TerminalClient({
     setStoredTarget(readStoredTarget());
     setStorageLoaded(true);
   }, [useStoredTarget]);
+
+  useEffect(() => {
+    setShortcutItems(readStoredShortcutItems());
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearCopyLongPressTimer(copyLongPressTimerRef);
+    };
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current || !storageLoaded || needsPassword) return;
@@ -108,6 +137,7 @@ export default function TerminalClient({
       fitAddon.fit();
       focusTerminal(term);
       const disposeOsc52 = registerOsc52ClipboardHandler(term);
+      const disposeTouchScroll = setupMobileTouchScroll(terminalContainer, term);
 
       termRef.current = term;
       fitAddonRef.current = fitAddon;
@@ -118,6 +148,7 @@ export default function TerminalClient({
       if (!sessionTarget) {
         term.writeln('Missing SSH target. Return to the home page and enter node information again.');
         cleanup = () => {
+          disposeTouchScroll.dispose();
           disposeOsc52.dispose();
           term.dispose();
         };
@@ -136,6 +167,7 @@ export default function TerminalClient({
         const message = caught instanceof Error ? caught.message : 'Secure channel failed';
         term.writeln(`\r\n[ERROR] ${message}`);
         cleanup = () => {
+          disposeTouchScroll.dispose();
           disposeOsc52.dispose();
           term.dispose();
         };
@@ -143,6 +175,8 @@ export default function TerminalClient({
       }
 
       if (disposed) {
+        disposeTouchScroll.dispose();
+        disposeOsc52.dispose();
         term.dispose();
         return;
       }
@@ -286,6 +320,7 @@ export default function TerminalClient({
         resizeObserver.disconnect();
         window.removeEventListener('resize', onResize);
         disposeData.dispose();
+        disposeTouchScroll.dispose();
         disposeOsc52.dispose();
         ws.close();
         term.dispose();
@@ -303,6 +338,194 @@ export default function TerminalClient({
     };
   }, [needsPassword, nodeName, sessionTarget, storageLoaded]);
 
+  const sendShortcutItem = useCallback((item: ShortcutItem) => {
+    const term = termRef.current;
+    if (!term) return;
+
+    const input = resolveShortcutInput(item, term);
+
+    if (!input) return;
+
+    term.input(input, true);
+    focusTerminal(term);
+  }, []);
+
+  const toggleShortcutEditor = useCallback(() => {
+    setCopyModeOpen(false);
+    setPastePanelOpen(false);
+    setShortcutEditorOpen((isOpen) => !isOpen);
+  }, []);
+
+  const openPastePanel = useCallback(() => {
+    setCopyModeOpen(false);
+    setShortcutEditorOpen(false);
+    setPastePanelOpen(true);
+    window.requestAnimationFrame(() => {
+      pasteInputRef.current?.focus();
+    });
+  }, []);
+
+  const closePastePanel = useCallback(() => {
+    setPastePanelOpen(false);
+    setPasteText('');
+    const term = termRef.current;
+    if (term) {
+      focusTerminal(term);
+    }
+  }, []);
+
+  const submitPaste = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!pasteText) {
+        pasteInputRef.current?.focus();
+        return;
+      }
+
+      const term = termRef.current;
+      if (term) {
+        term.paste(pasteText);
+      }
+
+      setPasteText('');
+      setPastePanelOpen(false);
+      if (term) {
+        focusTerminal(term);
+      }
+    },
+    [pasteText]
+  );
+
+  const openCopyMode = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+
+    setPastePanelOpen(false);
+    setShortcutEditorOpen(false);
+    setCopyModeText(readTerminalBufferText(term));
+    setCopyModeOpen(true);
+    term.blur();
+  }, []);
+
+  const closeCopyMode = useCallback(() => {
+    setCopyModeOpen(false);
+    setCopyModeText('');
+    const term = termRef.current;
+    if (term) {
+      focusTerminal(term);
+    }
+  }, []);
+
+  const handleTerminalTouchStart = useCallback(
+    (event: ReactTouchEvent<HTMLDivElement>) => {
+      if (!isMobileTerminalTouch() || event.touches.length !== 1 || copyModeOpen) {
+        return;
+      }
+      if (shouldIgnoreTouchTarget(event.target)) {
+        return;
+      }
+
+      const touch = event.touches[0];
+      copyLongPressStartRef.current = { x: touch.clientX, y: touch.clientY };
+      clearCopyLongPressTimer(copyLongPressTimerRef);
+      copyLongPressTimerRef.current = window.setTimeout(() => {
+        copyLongPressTimerRef.current = undefined;
+        copyLongPressStartRef.current = undefined;
+        openCopyMode();
+      }, COPY_MODE_LONG_PRESS_MS);
+    },
+    [copyModeOpen, openCopyMode]
+  );
+
+  const handleTerminalTouchMove = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    const start = copyLongPressStartRef.current;
+    if (!start || event.touches.length !== 1) {
+      clearCopyLongPressTimer(copyLongPressTimerRef);
+      copyLongPressStartRef.current = undefined;
+      return;
+    }
+
+    const touch = event.touches[0];
+    if (
+      Math.abs(touch.clientX - start.x) > COPY_MODE_MOVE_TOLERANCE_PX ||
+      Math.abs(touch.clientY - start.y) > COPY_MODE_MOVE_TOLERANCE_PX
+    ) {
+      clearCopyLongPressTimer(copyLongPressTimerRef);
+      copyLongPressStartRef.current = undefined;
+    }
+  }, []);
+
+  const handleTerminalTouchEnd = useCallback(() => {
+    clearCopyLongPressTimer(copyLongPressTimerRef);
+    copyLongPressStartRef.current = undefined;
+  }, []);
+
+  const toggleShortcutAction = useCallback((actionId: ShortcutActionId) => {
+    setShortcutItems((current) => {
+      const exists = current.some((item) => isBuiltInShortcutItem(item, actionId));
+      const addedItem: BuiltInShortcutItem = { type: 'built-in', actionId };
+      const next = exists
+        ? current.filter((item) => !isBuiltInShortcutItem(item, actionId))
+        : [...current, addedItem];
+
+      writeStoredShortcutItems(next);
+      return next;
+    });
+  }, []);
+
+  const moveShortcutItem = useCallback((itemKey: string, direction: -1 | 1) => {
+    setShortcutItems((current) => {
+      const index = current.findIndex((item) => getShortcutItemKey(item) === itemKey);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) {
+        return current;
+      }
+
+      const next = [...current];
+      const [item] = next.splice(index, 1);
+      next.splice(nextIndex, 0, item);
+      writeStoredShortcutItems(next);
+      return next;
+    });
+  }, []);
+
+  const removeCustomShortcut = useCallback((itemId: string) => {
+    setShortcutItems((current) => {
+      const next = current.filter((item) => item.type !== 'custom' || item.id !== itemId);
+      writeStoredShortcutItems(next);
+      return next;
+    });
+  }, []);
+
+  const addCustomShortcut = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const normalized = normalizeCustomShortcutDraft(customShortcutLabel, customShortcutInput);
+
+      if (!normalized) {
+        setCustomShortcutError('请输入名称和发送内容');
+        return;
+      }
+
+      setShortcutItems((current) => {
+        const next = [...current, normalized];
+        writeStoredShortcutItems(next);
+        return next;
+      });
+      setCustomShortcutLabel('');
+      setCustomShortcutInput('');
+      setCustomShortcutError('');
+    },
+    [customShortcutInput, customShortcutLabel]
+  );
+
+  const resetShortcutActions = useCallback(() => {
+    const next = getDefaultShortcutItems();
+    setShortcutItems(next);
+    writeStoredShortcutItems(next);
+    setCustomShortcutError('');
+  }, []);
+
   const submitPassword = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!passwordInput) {
@@ -317,7 +540,41 @@ export default function TerminalClient({
 
   return (
     <div className="terminal-client">
-      <div ref={containerRef} className="terminal-container" />
+      <div
+        ref={containerRef}
+        className="terminal-container"
+        onTouchStart={handleTerminalTouchStart}
+        onTouchMove={handleTerminalTouchMove}
+        onTouchEnd={handleTerminalTouchEnd}
+        onTouchCancel={handleTerminalTouchEnd}
+      />
+      {copyModeOpen ? <TerminalCopyOverlay text={copyModeText} onClose={closeCopyMode} /> : null}
+      {storageLoaded && !needsPassword ? (
+        <MobileTerminalToolbar
+          shortcutItems={shortcutItems}
+          customShortcutError={customShortcutError}
+          customShortcutInput={customShortcutInput}
+          customShortcutLabel={customShortcutLabel}
+          isEditorOpen={shortcutEditorOpen}
+          isPasteOpen={pastePanelOpen}
+          pasteInputRef={pasteInputRef}
+          pasteText={pasteText}
+          onAddCustomShortcut={addCustomShortcut}
+          onClosePaste={closePastePanel}
+          onCustomShortcutInputChange={setCustomShortcutInput}
+          onCustomShortcutLabelChange={setCustomShortcutLabel}
+          onMoveShortcut={moveShortcutItem}
+          onOpenCopy={openCopyMode}
+          onOpenPaste={openPastePanel}
+          onPasteSubmit={submitPaste}
+          onPasteTextChange={setPasteText}
+          onRemoveCustomShortcut={removeCustomShortcut}
+          onResetShortcuts={resetShortcutActions}
+          onShortcutPress={sendShortcutItem}
+          onToggleEditor={toggleShortcutEditor}
+          onToggleShortcut={toggleShortcutAction}
+        />
+      ) : null}
       {needsPassword ? (
         <form
           className="ssh-password-panel"
@@ -387,82 +644,13 @@ function getSessionStorageKey(target?: TerminalTarget) {
   return undefined;
 }
 
-function focusTerminal(term: XTermTerminal) {
-  window.requestAnimationFrame(() => {
-    term.focus();
-  });
-}
-
-function registerOsc52ClipboardHandler(term: XTermTerminal) {
-  return term.parser.registerOscHandler(OSC_52_CLIPBOARD, async (data) => {
-    const clipboardText = parseOsc52ClipboardText(data);
-    if (clipboardText === undefined) {
-      return false;
-    }
-
-    await writeTextToClipboard(clipboardText);
-    return true;
-  });
-}
-
-function parseOsc52ClipboardText(data: string) {
-  const separatorIndex = data.indexOf(';');
-  if (separatorIndex < 0) return undefined;
-
-  const encodedText = data.slice(separatorIndex + 1).trim();
-  if (!encodedText || encodedText === '?') return undefined;
-
-  try {
-    const decoded = decodeBase64Utf8(encodedText);
-    if (decoded.length > MAX_OSC_52_CLIPBOARD_CHARS) {
-      return decoded.slice(0, MAX_OSC_52_CLIPBOARD_CHARS);
-    }
-
-    return decoded;
-  } catch {
-    return undefined;
+function clearCopyLongPressTimer(timerRef: { current: number | undefined }) {
+  if (timerRef.current !== undefined) {
+    window.clearTimeout(timerRef.current);
+    timerRef.current = undefined;
   }
 }
 
-function decodeBase64Utf8(value: string) {
-  const binary = window.atob(value);
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-
-  return new TextDecoder().decode(bytes);
-}
-
-async function writeTextToClipboard(text: string) {
-  try {
-    if (window.isSecureContext && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return;
-    }
-  } catch {
-    // Fall back to the legacy copy path below when the async Clipboard API is denied.
-  }
-
-  copyTextWithHiddenTextarea(text);
-}
-
-function copyTextWithHiddenTextarea(text: string) {
-  const activeElement = document.activeElement;
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', 'true');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  textarea.style.top = '0';
-  textarea.style.opacity = '0';
-
-  document.body.appendChild(textarea);
-  try {
-    textarea.select();
-    document.execCommand('copy');
-  } finally {
-    textarea.remove();
-
-    if (activeElement instanceof HTMLElement) {
-      activeElement.focus({ preventScroll: true });
-    }
-  }
+function isBuiltInShortcutItem(item: ShortcutItem, actionId: ShortcutActionId) {
+  return item.type === 'built-in' && item.actionId === actionId;
 }
