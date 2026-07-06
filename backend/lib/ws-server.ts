@@ -1,5 +1,6 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import type { Server as HttpServer, IncomingMessage } from 'http';
+import type { Server as HttpsServer } from 'https';
 import { createTerminalSession, resumeTerminalSession } from './terminal-session-manager';
 import type { TerminalPeer, TerminalSessionHandle } from './terminal-session-manager';
 import { normalizeClientMessage, type ClientMessage } from './terminal-protocol';
@@ -14,7 +15,7 @@ type AliveWebSocket = WebSocket & {
 const TERMINAL_WEBSOCKET_PATH = '/ws/terminal';
 
 export function setupWebSocketServer(
-  server: HttpServer,
+  server: HttpServer | HttpsServer,
   auth: AuthService,
   config: RuntimeConfig,
   secureChannel: SecureChannelService

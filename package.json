@@ -7,7 +7,7 @@
     "npm": ">=10.0.0"
   },
   "scripts": {
-    "dev": "node --import tsx backend/server.ts",
+    "dev": "node scripts/dev.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
     "build": "npm run typecheck && npm run build:frontend && npm run build:backend",
     "build:frontend": "next build frontend",

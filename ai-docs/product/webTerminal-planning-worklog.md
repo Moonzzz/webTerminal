@@ -166,3 +166,20 @@ summary: webTerminal 功能规划与文档整理开发日志，记录已完成�
 - `ai-docs/product/webTerminal-planning-worklog.md`
 - `ai-docs/product/architecture-optimization.md`
 - `ai-docs/product/requires.md`
+
+### 2026-07-06：开发模式 HTTPS 与证书生成
+
+- [x] `npm run dev` 改为开发启动包装脚本，默认证书不存在时自动用 `openssl` 生成自签证书。
+- [x] 开发证书默认写入 `.certs/webterminal-dev-key.pem` 和 `.certs/webterminal-dev-cert.pem`，并包含 localhost、机器名和当前局域网 IP 的 SAN。
+- [x] 继续支持通过 `WEBTERMINAL_HTTPS_KEY` 和 `WEBTERMINAL_HTTPS_CERT` 指定自定义开发证书路径，解决局域网 HTTP 访问时浏览器不暴露 Web Crypto 的问题。
+- [x] README 补充局域网设备访问开发服务时的 HTTPS 证书配置说明。
+- [x] 运行类型检查验证通过。
+
+相关文件：
+
+- `package.json`
+- `scripts/dev.mjs`
+- `.gitignore`
+- `backend/server.ts`
+- `backend/lib/ws-server.ts`
+- `README.md`

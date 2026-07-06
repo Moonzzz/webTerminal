@@ -1,4 +1,7 @@
-import { createServer } from 'node:http';
+import fs from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
+import type { RequestListener } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import path from 'node:path';
 import next from 'next';
 import { AuthService } from './lib/auth';
@@ -24,7 +27,7 @@ const handle = app.getRequestHandler();
 async function main() {
   await app.prepare();
 
-  const server = createServer(async (req, res) => {
+  const requestListener: RequestListener = async (req, res) => {
     try {
       if (await handleBackendRequest(req, res, auth, secureChannel)) {
         return;
@@ -46,12 +49,13 @@ async function main() {
       const message = error instanceof Error ? error.message : 'Internal server error';
       sendJson(res, 500, { error: message });
     }
-  });
+  };
+  const { server, protocol } = createDevAwareServer(requestListener);
 
   setupWebSocketServer(server, auth, config, secureChannel);
 
   server.listen(config.server.port, config.server.hostname, () => {
-    console.log(`> Ready on http://${config.server.hostname}:${config.server.port}`);
+    console.log(`> Ready on ${protocol}://${config.server.hostname}:${config.server.port}`);
   });
 }
 
@@ -71,4 +75,27 @@ function isPublicRequest(rawUrl: string) {
 
 function acceptsHtml(value: string | undefined) {
   return !value || value.includes('text/html') || value.includes('*/*');
+}
+
+function createDevAwareServer(requestListener: RequestListener) {
+  const keyPath = process.env.WEBTERMINAL_HTTPS_KEY;
+  const certPath = process.env.WEBTERMINAL_HTTPS_CERT;
+
+  if (dev && keyPath && certPath) {
+    return {
+      server: createHttpsServer(
+        {
+          key: fs.readFileSync(keyPath),
+          cert: fs.readFileSync(certPath),
+        },
+        requestListener
+      ),
+      protocol: 'https',
+    };
+  }
+
+  return {
+    server: createHttpServer(requestListener),
+    protocol: 'http',
+  };
 }

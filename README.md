@@ -36,9 +36,25 @@ stored. There are no preconfigured SSH nodes or server-side private-key nodes.
 npm run dev
 ```
 
-Open `http://localhost:3000`. The default local login is `admin` /
+The dev script creates `.certs/webterminal-dev-key.pem` and
+`.certs/webterminal-dev-cert.pem` when they do not exist, then starts the
+server with HTTPS enabled. Open `https://localhost:3000`. The default local login is `admin` /
 `webTerminal`; override it with environment variables before exposing the
 service.
+
+To access the dev server from another LAN device, open
+`https://<lan-ip>:3000`. Browsers require HTTPS before exposing the Web Crypto
+APIs used by the secure channel. The generated certificate includes localhost,
+the machine hostname, and current LAN IP addresses as SAN entries, but it is
+self-signed and must be trusted by the client device to avoid browser warnings.
+
+Use custom development certificate paths when needed:
+
+```bash
+WEBTERMINAL_HTTPS_KEY=./localhost-key.pem \
+WEBTERMINAL_HTTPS_CERT=./localhost.pem \
+npm run dev
+```
 
 ## Production
 
