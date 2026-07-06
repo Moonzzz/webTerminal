@@ -57,6 +57,19 @@ summary: webTerminal 移动端 terminal 支持方案探索，覆盖底部快捷�
 - 普通 buffer 复制 scrollback 文本，alternate buffer 复制当前可见区域。
 - 软键盘行为不做 `visualViewport` 大改；恢复移动端 terminal 底部 24px 预留间隔，尽量保留修改前键盘弹出时的可见性。
 
+2026-07-06 已按用户真机反馈继续修复移动端软键盘：
+
+- `layout.tsx` 增加 viewport 配置：`width=device-width`、`initial-scale=1`、`viewport-fit=cover`、`interactive-widget=resizes-content`。
+- 移动端 `visualViewport` 键盘 inset 手动顶起方案经真机反馈仍会产生大段空白，已回退。
+- terminal 页面不再按键盘 inset 叠加 bottom 补偿；改为使用 `visualViewport.height` 约束页面真实可视高度，Android Chrome 仍优先依赖 `interactive-widget=resizes-content` 缩小内容区。
+- 快捷栏保留为 terminal client 底部 grid 区域，软键盘弹出时作为纯 Web 模拟附件栏停在键盘上方。
+- terminal client 移动端布局从 flex 改为两行 grid，terminal 和快捷栏各占独立行，避免快捷栏覆盖底部 terminal 内容。
+- 快捷键按钮在移动端 touch tap 阶段发送输入，拖动时让快捷栏横向滚动，避免点击 Tab、Esc、Ctrl+C 或方向键时关闭软键盘。
+- 快捷键栏横向拖动保留手动 scroll，并避免拖动结束误触发送快捷键。
+- Edge 移动端反馈后，terminal 区域禁用页面级触摸滚动和 overscroll，下拉刷新不再接管 terminal 内上下拖动。
+- `visualViewport` 变化时同步更新可视宽度并触发 xterm fit/resize，避免键盘弹出后 terminal 列宽沿用旧值。
+- terminal 页面顶部栏已移除，terminal 区域直接占满页面主体。
+
 ## 已确认现状
 
 当前 terminal 页面实现集中在 `TerminalClient.tsx`：
@@ -192,6 +205,7 @@ summary: webTerminal 移动端 terminal 支持方案探索，覆盖底部快捷�
 - 方向键必须兼容 application cursor mode，否则 vim、tmux、部分 TUI 中可能失效。
 - 底部工具栏会改变 terminal 可用高度，必须触发 `fitAddon.fit()` 并同步 resize 到后端。
 - 移动端软键盘弹出时，当前 fixed 全屏布局只跟随 layout viewport；iOS/Android 浏览器通常需要监听 `window.visualViewport` 才能让 terminal 可视区域跟随键盘上移。
+- 2026-07-06 真机反馈显示 `visualViewport` 手动布局补偿会造成过大空白，已回退该补偿。
 - 工具栏按钮不要使用 `<button>` 默认 submit 行为，避免嵌套表单或未来扩展时误触。
 - 用户自定义快捷键允许保存任意终端输入文本，可能产生误执行命令风险；UI 仅做长度和格式限制，不替用户判断命令安全性。
 

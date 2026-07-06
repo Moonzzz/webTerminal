@@ -20,7 +20,13 @@ summary: webTerminal 移动端 terminal 支持探索日志，记录已确认事�
 - [x] 增加移动端上下滑动 scrollback 支持。
 - [x] 真机验证 xterm 自带移动端长按/拖选复制能力。
 - [x] 增加 terminal 文本代理层，解决移动端长按无法弹出原生选择组件的问题。
-- [ ] 真机复测软键盘弹出后的底部输入可见性；若仍有遮挡，再增加 visualViewport 键盘适配。
+- [x] 尝试受限的 visualViewport 键盘适配；真机反馈空白过大后已回退。
+- [ ] 真机复测软键盘弹出后的底部输入可见性。
+- [x] 修正 visualViewport 二次顶起问题，避免软键盘弹出时产生大段空白。
+- [x] 移除 terminal 页面顶部栏，最大化 terminal 展示区域。
+- [x] 修复移动端点击快捷键时软键盘被按钮抢焦点关闭的问题。
+- [x] 增加 `interactive-widget=resizes-content` viewport 配置，优先让 Android Chrome 随软键盘缩小内容区。
+- [x] 探索 terminal 移动端滑动滞涩问题，形成原生 xterm viewport 优先的修复方案。
 - [x] 增加粘贴输入框，使用移动端原生文字编辑菜单完成粘贴。
 - [x] 确认移动端界面不出现剪切入口。
 - [ ] 完成移动端视口验证。
@@ -103,10 +109,98 @@ summary: webTerminal 移动端 terminal 支持探索日志，记录已确认事�
 - [x] 执行 `npm run build:frontend`，通过。
 - [x] 执行 `git diff --check`，通过。
 
+### 2026-07-06：移动端软键盘与快捷键焦点修复
+
+- [x] 记录用户真机反馈：软键盘弹出时内容没有自动顶上去；软键盘打开时点击快捷键会导致键盘收回。
+- [x] 在 `TerminalClient.tsx` 增加移动端 `visualViewport` 监听，用于计算软键盘占用区域。
+- [x] 在 `globals.css` 的移动端规则中让 `.terminal-page` 根据键盘占用区域调整底部边界，软键盘弹出时由 ResizeObserver 触发 xterm refit。
+- [x] 在 `MobileTerminalToolbar.tsx` 中为快捷键按钮增加 touch tap 发送路径，阻止按钮默认抢焦点，避免关闭 xterm 软键盘。
+- [x] 保留快捷键栏横向拖动能力，并抑制拖动结束后的合成 click 误触。
+
+### 2026-07-06：移动端显示区域最大化修正
+
+- [x] 记录用户真机反馈：软键盘弹出时顶起高度过高，产生大段空白无法用于展示。
+- [x] 将 `visualViewport` 适配从设置页面可视高度改为计算 `window.innerHeight - visualViewport.height - offsetTop` 的键盘底部 inset。
+- [x] 移动端 `.terminal-page` 只设置 `bottom: var(--terminal-keyboard-inset)`，避免和浏览器自身 viewport 缩放叠加。
+- [x] 移除 terminal 页面顶部栏和返回链接，让 terminal shell 直接占满页面主体。
+
+### 2026-07-06：回退软键盘手动顶起补偿
+
+- [x] 记录用户复测反馈：键盘弹出时仍有很大空白区域。
+- [x] 回退 `TerminalClient.tsx` 中写入 `--terminal-keyboard-inset` 的 `visualViewport` 监听逻辑。
+- [x] 回退 `globals.css` 中移动端 `.terminal-page` 的 `bottom: var(--terminal-keyboard-inset)`。
+- [x] 后续验证暂不运行 `npm run build:frontend`，避免 Next 构建反复改写 `next-env.d.ts`。
+
+### 2026-07-06：键盘上方模拟快捷栏落地
+
+- [x] 在 `layout.tsx` 增加 Next viewport 配置：`width=device-width`、`initial-scale=1`、`viewport-fit=cover`、`interactive-widget=resizes-content`。
+- [x] 保持 terminal 页面无顶部栏，terminal client 使用移动端两行 grid 布局，快捷栏作为底部 DOM 区域模拟键盘附件栏。
+- [x] 确认没有重新引入键盘 inset bottom 补偿，避免和浏览器原生键盘避让叠加。
+- [x] 增加最小 `visualViewport.height` 兜底，只约束 terminal 页面为真实可视高度，让软键盘弹出时快捷栏整体移动到键盘上方。
+- [x] 移动端 terminal 和快捷栏拆成独立 grid 行，避免快捷栏覆盖底部 terminal 内容。
+- [x] 为快捷键按钮增加 `tabIndex={-1}`，并在捕获阶段阻止 `touchstart`/`pointerdown` 默认聚焦。
+- [x] 保留 touch tap 发送快捷键和横向拖动滚动逻辑，拖动结束不发送快捷键。
+
+### 2026-07-06：Edge 移动端交互修正
+
+- [x] 记录用户反馈：Edge 移动端快捷栏位置正确，但快捷栏无法横向滚动，terminal 宽度渲染错误，terminal 内上下拖动抖动且容易触发浏览器下拉刷新。
+- [x] 放开快捷键按钮按下阶段的默认行为拦截，仅在 touch tap 结束时发送快捷键并抑制合成 click，恢复快捷栏横向滚动。
+- [x] 移动端页面、terminal 容器和快捷栏补充 `min-width: 0`、`width`、`overscroll-behavior` 和 `touch-action` 约束，避免页面级横向撑宽和浏览器下拉刷新。
+- [x] `visualViewport` 变化时同步写入可视宽度并触发 xterm fit/resize，修复键盘弹出后 terminal 列宽可能不更新的问题。
+- [x] terminal 触摸滚动从开始阶段阻止默认页面滚动，并降低行滚动倍率，减少抖动和误触发浏览器刷新。
+
+### 2026-07-06：terminal 滑动流畅度方案探索
+
+- [x] 记录用户反馈：Edge 移动端三项修复已生效，但 terminal 内滑动有滞涩感，表现为滑动慢且不够流畅。
+- [x] 确认当前滞涩主要来自 `touch-scroll.ts` 默认接管 `touchmove`，通过 `term.scrollLines()` 按行滚动，且倍率降为 `0.55`。
+- [x] 确认 xterm 自带 `.xterm-viewport` 是 `overflow-y: scroll`，具备更接近原生像素级滚动和惯性滚动的基础。
+- [x] 新增 `mobile-terminal-scroll-smoothness-plan.md`，推荐优先恢复 xterm viewport 原生滚动，手动 `scrollLines()` 只作为 fallback。
+
+### 2026-07-06：terminal 原生滚动实施
+
+- [x] 按方案 1 恢复 xterm viewport 原生滚动，移动端 `.terminal-container` 改为允许 `pan-y`。
+- [x] 为 `.xterm-viewport` 补充 `touch-action: pan-y`，继续保留移动端惯性滚动和 overscroll contain。
+- [x] 将 `touch-scroll.ts` 从按行 `term.scrollLines()` 默认接管改为边界 overscroll 防护，只在 viewport 顶部/底部继续外拉时阻止默认行为。
+- [x] 保留横向手势忽略和选区状态忽略，避免影响快捷栏横滑、复制模式和 xterm selection。
+
+### 2026-07-06：terminal 触摸滑动恢复
+
+- [x] 记录用户反馈：方案 1 后 terminal 内无法进行触摸滑动。
+- [x] 判断原因：当前触摸命中主要落在 `.xterm-screen`/canvas，单纯放开 `.xterm-viewport` 原生滚动无法稳定触发 xterm 滚动系统。
+- [x] 将 `.terminal-container` 恢复为 `touch-action: none`，继续阻止浏览器页面滚动和下拉刷新接管。
+- [x] `touch-scroll.ts` 改为 touch-to-wheel 桥接：垂直拖动时派发像素级 `WheelEvent` 给 `.xterm-scrollable-element`，由 xterm 内部 `SmoothScrollableElement` 处理滚动。
+- [x] 保留横向手势忽略、选区状态忽略和移动端工具栏忽略。
+
+### 2026-07-06：terminal 快速滑动修正
+
+- [x] 记录用户反馈：touch-to-wheel 后可滑动，但滑动仍然太慢，无法快速滑动。
+- [x] 将触摸位移到 wheel delta 的倍率从 `1.15` 调整为 `2.4`，提升手指滑动距离到 xterm 滚动距离的映射速度。
+- [x] 增加 touchend 后的短惯性滚动，根据最后移动速度继续派发递减 wheel 事件，让快速滑动释放后继续滚动。
+- [x] 为单次触摸 delta 和惯性 delta 增加上限，避免极端事件导致 scrollback 跳跃过大。
+
+### 2026-07-06：移动端回归原因和 E2E 方案分析
+
+- [x] 分析本轮反复修改的根因：软键盘 visual viewport、fixed 布局、terminal grid 高度、快捷栏触摸、xterm 自定义滚动和浏览器下拉刷新共享同一套移动端触摸与视口机制。
+- [x] 确认现有 `typecheck`、构建和后端单测无法覆盖软键盘、快捷栏横滑、terminal 触摸滑动和下拉刷新。
+- [x] 新增 `mobile-terminal-e2e-regression-plan.md`，提出三层测试策略：手势单测、Playwright 移动端 E2E harness、真机 Edge/Chrome 冒烟。
+- [x] 建议新增测试 harness 页面，避免 E2E 依赖登录、secure channel、WebSocket 和真实 SSH。
+
+### 2026-07-06：测试策略收敛
+
+- [x] 记录用户判断：`touch-scroll` 没必要继续复杂化，核心问题是缺少回归测试导致软键盘改动影响快捷栏和 terminal 滚动。
+- [x] 将后续优先级调整为先落地 Playwright 移动端 E2E harness，再在测试保护下收敛 `touch-scroll.ts`。
+- [x] 更新 `mobile-terminal-scroll-smoothness-plan.md`，明确不再优先通过继续复杂化 `touch-scroll.ts` 解决体验问题。
+- [x] 更新 `mobile-terminal-e2e-regression-plan.md`，强调 E2E harness 是优先项，单测只覆盖稳定边界。
+
 相关文件：
 
 - `TerminalClient.tsx`
+- `MobileTerminalToolbar.tsx`
 - `globals.css`
+- `touch-scroll.ts`
+- `mobile-terminal-scroll-smoothness-plan.md`
+- `mobile-terminal-e2e-regression-plan.md`
+- `layout.tsx`
 - `page.tsx`
 - `mobile-terminal-support.md`
 - `mobile-terminal-support-worklog.md`
@@ -128,3 +222,9 @@ summary: webTerminal 移动端 terminal 支持探索日志，记录已确认事�
 - 2026-07-02 重新验证：`npm run typecheck`、`npm run build:frontend`、`git diff --check` 均通过；浏览器插件仍无可用实例。
 - 2026-07-03 用户真机反馈：xterm 内建选择能力在移动端不可用，长按 terminal 不弹系统原生选择组件；软键盘弹出时页面没有跟随可视视口上移。
 - 2026-07-03 已实现复制模式，并重新执行 `npm run typecheck`、`npm run build:frontend`、`git diff --check`，均通过。
+- 2026-07-06 已实现快捷键 touch 保焦点逻辑；`visualViewport` 手动补偿因真机空白过大已回退，待真机复测浏览器原生键盘行为。
+- 2026-07-06 已增加 `interactive-widget=resizes-content` viewport 配置和 `visualViewport.height` 兜底，并重新执行 `npm run typecheck` 通过。
+- 2026-07-06 已按 Edge 移动端反馈修复快捷栏横向滚动、terminal 宽度 refit 和 terminal 内触摸滚动防下拉刷新。
+- 2026-07-06 已形成 terminal 滑动流畅度修复方案；方案 1 真机不可滑动后，已切换为 touch-to-wheel 桥接恢复触摸滑动，并补充快速滑动惯性。
+- 2026-07-06 已完成移动端回归原因分析和 E2E 自动化测试方案，建议后续优先落地测试 harness 和 Playwright 移动端回归。
+- 2026-07-06 已按用户反馈收敛策略：不继续复杂化 `touch-scroll`，优先考虑 Playwright 移动端 E2E harness。

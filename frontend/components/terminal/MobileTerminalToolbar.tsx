@@ -1,4 +1,9 @@
-import type { FormEvent, RefObject } from 'react';
+import { useCallback, useRef } from 'react';
+import type {
+  FormEvent,
+  RefObject,
+  TouchEvent as ReactTouchEvent,
+} from 'react';
 import {
   CUSTOM_SHORTCUT_INPUT_MAX_CHARS,
   CUSTOM_SHORTCUT_LABEL_MAX_CHARS,
@@ -15,6 +20,12 @@ import type {
   ShortcutActionId,
   ShortcutItem,
 } from './types';
+
+const SHORTCUT_TOUCH_MOVE_TOLERANCE_PX = 10;
+
+type ShortcutPressOptions = {
+  preserveFocus?: boolean;
+};
 
 type MobileTerminalToolbarProps = {
   shortcutItems: readonly ShortcutItem[];
@@ -36,7 +47,7 @@ type MobileTerminalToolbarProps = {
   onPasteTextChange: (value: string) => void;
   onRemoveCustomShortcut: (itemId: string) => void;
   onResetShortcuts: () => void;
-  onShortcutPress: (item: ShortcutItem) => void;
+  onShortcutPress: (item: ShortcutItem, options?: ShortcutPressOptions) => void;
   onToggleEditor: () => void;
   onToggleShortcut: (actionId: ShortcutActionId) => void;
 };
@@ -65,6 +76,15 @@ export function MobileTerminalToolbar({
   onToggleEditor,
   onToggleShortcut,
 }: MobileTerminalToolbarProps) {
+  const shortcutScrollRef = useRef<HTMLDivElement | null>(null);
+  const shortcutTouchRef = useRef<{
+    itemKey: string;
+    startX: number;
+    startY: number;
+    lastX: number;
+    moved: boolean;
+  } | null>(null);
+  const lastShortcutTouchAtRef = useRef(0);
   const selectedBuiltInIds = new Set(
     shortcutItems
       .filter((item): item is BuiltInShortcutItem => item.type === 'built-in')
@@ -73,6 +93,73 @@ export function MobileTerminalToolbar({
   const customItems = shortcutItems.filter(
     (item): item is CustomShortcutItem => item.type === 'custom'
   );
+
+  const handleShortcutTouchStart = useCallback(
+    (event: ReactTouchEvent<HTMLButtonElement>, itemKey: string) => {
+      if (event.touches.length !== 1) {
+        shortcutTouchRef.current = null;
+        return;
+      }
+
+      const touch = event.touches[0];
+      shortcutTouchRef.current = {
+        itemKey,
+        startX: touch.clientX,
+        startY: touch.clientY,
+        lastX: touch.clientX,
+        moved: false,
+      };
+    },
+    []
+  );
+
+  const handleShortcutTouchMove = useCallback((event: ReactTouchEvent<HTMLButtonElement>) => {
+    const current = shortcutTouchRef.current;
+    if (!current || event.touches.length !== 1) {
+      shortcutTouchRef.current = null;
+      return;
+    }
+
+    const touch = event.touches[0];
+    const deltaX = touch.clientX - current.lastX;
+    current.lastX = touch.clientX;
+
+    if (
+      Math.abs(touch.clientX - current.startX) > SHORTCUT_TOUCH_MOVE_TOLERANCE_PX ||
+      Math.abs(touch.clientY - current.startY) > SHORTCUT_TOUCH_MOVE_TOLERANCE_PX
+    ) {
+      current.moved = true;
+    }
+
+    if (current.moved) {
+      const scrollContainer = event.currentTarget.closest<HTMLElement>('.terminal-shortcut-scroll');
+      if (scrollContainer) {
+        scrollContainer.scrollLeft -= deltaX;
+      }
+      event.preventDefault();
+    }
+  }, []);
+
+  const handleShortcutTouchEnd = useCallback(
+    (event: ReactTouchEvent<HTMLButtonElement>, item: ShortcutItem, itemKey: string) => {
+      const current = shortcutTouchRef.current;
+      shortcutTouchRef.current = null;
+
+      if (!current || current.itemKey !== itemKey || current.moved) {
+        lastShortcutTouchAtRef.current = Date.now();
+        return;
+      }
+
+      event.preventDefault();
+      lastShortcutTouchAtRef.current = Date.now();
+      onShortcutPress(item, { preserveFocus: true });
+    },
+    [onShortcutPress]
+  );
+
+  const handleShortcutTouchCancel = useCallback(() => {
+    shortcutTouchRef.current = null;
+  }, []);
 
   return (
     <div className="mobile-terminal-bar" aria-label="Terminal 快捷键栏">
@@ -217,18 +304,31 @@ export function MobileTerminalToolbar({
       ) : null}
 
       <div className="terminal-shortcut-row">
-        <div className="terminal-shortcut-scroll" aria-label="快捷键">
+        <div ref={shortcutScrollRef} className="terminal-shortcut-scroll" aria-label="快捷键">
           {shortcutItems.map((item) => {
             const view = getShortcutItemView(item);
             if (!view) return null;
+            const itemKey = getShortcutItemKey(item);
 
             return (
               <button
-                key={getShortcutItemKey(item)}
+                key={itemKey}
                 type="button"
                 className="terminal-shortcut-button"
                 aria-label={view.description}
-                onClick={() => onShortcutPress(item)}
+                tabIndex={-1}
+                onClick={(event) => {
+                  if (Date.now() - lastShortcutTouchAtRef.current < 700) {
+                    event.preventDefault();
+                    return;
+                  }
+
+                  onShortcutPress(item);
+                }}
+                onTouchStart={(event) => handleShortcutTouchStart(event, itemKey)}
+                onTouchMove={handleShortcutTouchMove}
+                onTouchEnd={(event) => handleShortcutTouchEnd(event, item, itemKey)}
+                onTouchCancel={handleShortcutTouchCancel}
               >
                 {view.label}
               </button>

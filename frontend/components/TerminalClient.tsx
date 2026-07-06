@@ -11,7 +11,11 @@ import {
 } from '@/lib/secure-channel';
 import { MobileTerminalToolbar } from './terminal/MobileTerminalToolbar';
 import { TerminalCopyOverlay } from './terminal/TerminalCopyOverlay';
-import { getDefaultShortcutItems, getShortcutItemKey, resolveShortcutInput } from './terminal/shortcut-actions';
+import {
+  getDefaultShortcutItems,
+  getShortcutItemKey,
+  resolveShortcutInput,
+} from './terminal/shortcut-actions';
 import {
   normalizeCustomShortcutDraft,
   readStoredShortcutItems,
@@ -42,6 +46,8 @@ const MAX_WS_BUFFERED_AMOUNT = 256 * 1024;
 const COPY_MODE_LONG_PRESS_MS = 520;
 const COPY_MODE_MOVE_TOLERANCE_PX = 10;
 
+type ResizeTerminal = () => void;
+
 type Props = {
   nodeName: string;
   useStoredTarget?: boolean;
@@ -58,6 +64,7 @@ export default function TerminalClient({
   const pasteInputRef = useRef<HTMLTextAreaElement | null>(null);
   const copyLongPressTimerRef = useRef<number | undefined>(undefined);
   const copyLongPressStartRef = useRef<{ x: number; y: number } | undefined>(undefined);
+  const resizeTerminalRef = useRef<ResizeTerminal>(() => {});
   const [storedTarget, setStoredTarget] = useState<TerminalTarget | undefined>();
   const [storageLoaded, setStorageLoaded] = useState(!useStoredTarget);
   const [passwordInput, setPasswordInput] = useState('');
@@ -97,6 +104,45 @@ export default function TerminalClient({
   useEffect(() => {
     return () => {
       clearCopyLongPressTimer(copyLongPressTimerRef);
+    };
+  }, []);
+
+  useEffect(() => {
+    const pageElement = containerRef.current?.closest<HTMLElement>('.terminal-page');
+    const visualViewport = window.visualViewport;
+    if (!pageElement || !visualViewport) return;
+
+    let resizeFrame = 0;
+    const updateVisualViewport = () => {
+      window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        pageElement.style.setProperty(
+          '--terminal-visual-viewport-top',
+          `${visualViewport.offsetTop}px`
+        );
+        pageElement.style.setProperty(
+          '--terminal-visual-viewport-height',
+          `${visualViewport.height}px`
+        );
+        pageElement.style.setProperty(
+          '--terminal-visual-viewport-width',
+          `${visualViewport.width}px`
+        );
+        resizeTerminalRef.current();
+      });
+    };
+
+    updateVisualViewport();
+    visualViewport.addEventListener('resize', updateVisualViewport);
+    visualViewport.addEventListener('scroll', updateVisualViewport);
+
+    return () => {
+      window.cancelAnimationFrame(resizeFrame);
+      visualViewport.removeEventListener('resize', updateVisualViewport);
+      visualViewport.removeEventListener('scroll', updateVisualViewport);
+      pageElement.style.removeProperty('--terminal-visual-viewport-top');
+      pageElement.style.removeProperty('--terminal-visual-viewport-height');
+      pageElement.style.removeProperty('--terminal-visual-viewport-width');
     };
   }, []);
 
@@ -311,6 +357,7 @@ export default function TerminalClient({
 
       const resizeObserver = new ResizeObserver(onResize);
       resizeObserver.observe(terminalContainer);
+      resizeTerminalRef.current = onResize;
       window.addEventListener('resize', onResize);
 
       cleanup = () => {
@@ -318,6 +365,7 @@ export default function TerminalClient({
         window.clearInterval(keepaliveTimer);
         window.cancelAnimationFrame(resizeFrame);
         resizeObserver.disconnect();
+        resizeTerminalRef.current = () => {};
         window.removeEventListener('resize', onResize);
         disposeData.dispose();
         disposeTouchScroll.dispose();
@@ -338,7 +386,7 @@ export default function TerminalClient({
     };
   }, [needsPassword, nodeName, sessionTarget, storageLoaded]);
 
-  const sendShortcutItem = useCallback((item: ShortcutItem) => {
+  const sendShortcutItem = useCallback((item: ShortcutItem, options?: { preserveFocus?: boolean }) => {
     const term = termRef.current;
     if (!term) return;
 
@@ -347,7 +395,9 @@ export default function TerminalClient({
     if (!input) return;
 
     term.input(input, true);
-    focusTerminal(term);
+    if (!options?.preserveFocus) {
+      focusTerminal(term);
+    }
   }, []);
 
   const toggleShortcutEditor = useCallback(() => {
