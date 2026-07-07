@@ -1,0 +1,8 @@
+[mcp_servers.playwright]
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+[mcp_servers.playwright.env]
+NPM_CONFIG_CACHE = "/private/tmp/npm-cache-codex"

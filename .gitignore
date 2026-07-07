@@ -9,6 +9,8 @@ frontend/.next/
 
 # Test coverage
 coverage/
+test-results/
+playwright-report/
 
 # Environment & secrets
 .env

@@ -192,6 +192,38 @@ summary: webTerminal 移动端 terminal 支持探索日志，记录已确认事�
 - [x] 更新 `mobile-terminal-scroll-smoothness-plan.md`，明确不再优先通过继续复杂化 `touch-scroll.ts` 解决体验问题。
 - [x] 更新 `mobile-terminal-e2e-regression-plan.md`，强调 E2E harness 是优先项，单测只覆盖稳定边界。
 
+### 2026-07-07：Playwright 移动端 E2E harness 落地
+
+- [x] 安装 `@playwright/test` 并下载 Chromium，用于本地移动端 E2E。
+- [x] 新增 Playwright 配置，使用 `Pixel 7` 移动端 Chromium 项目和独立 E2E 端口启动 dev server。
+- [x] 新增 `test:e2e:mobile` 脚本。
+- [x] 新增 `/terminal/test-harness` 页面，仅 `WEBTERMINAL_E2E=1` 下可访问。
+- [x] 后端认证层仅在 `WEBTERMINAL_E2E=1` 时放行 `/terminal/test-harness`，避免生产暴露测试页。
+- [x] 新增 terminal harness 组件，不连接 SSH/WebSocket，只渲染 xterm、移动端布局、快捷栏和 `setupMobileTouchScroll`。
+- [x] harness 暴露 `window.__terminalTestMetrics` 和 `window.__terminalTestControls`，用于断言 rows/cols、viewportY、wheel delta、scroll event、快捷键发送和 resize。
+- [x] Playwright 用 CDP `Input.dispatchTouchEvent` 派发 touch 手势，覆盖快捷栏 touch handler 和 terminal touch-scroll 链路。
+- [x] 新增移动端 E2E 用例：
+  - 移动端布局下快捷栏不遮挡 terminal。
+  - 快捷栏横向拖动可滚动且不误发快捷键。
+  - 快捷键 tap 会发送输入。
+  - terminal 垂直触摸拖动会滚动 scrollback，并阻止页面滚动。
+  - 快速拖动产生的滚动输入强度大于慢拖。
+  - viewport 缩高后 xterm rows/cols 重新 fit。
+- [x] 记录测试限制：headless Chromium 中 synthetic wheel 有时不会被 xterm 内部滚动系统消费；测试页只对未被消费的 synthetic wheel 做 public API 镜像滚动，生产代码不受影响。
+
+相关文件：
+
+- `package.json`
+- `package-lock.json`
+- `playwright.config.ts`
+- `mobile-terminal.spec.ts`
+- `page.tsx`
+- `TerminalTestHarness.tsx`
+- `server.ts`
+- `.gitignore`
+- `mobile-terminal-e2e-regression-plan.md`
+- `mobile-terminal-support-worklog.md`
+
 相关文件：
 
 - `TerminalClient.tsx`
@@ -228,3 +260,4 @@ summary: webTerminal 移动端 terminal 支持探索日志，记录已确认事�
 - 2026-07-06 已形成 terminal 滑动流畅度修复方案；方案 1 真机不可滑动后，已切换为 touch-to-wheel 桥接恢复触摸滑动，并补充快速滑动惯性。
 - 2026-07-06 已完成移动端回归原因分析和 E2E 自动化测试方案，建议后续优先落地测试 harness 和 Playwright 移动端回归。
 - 2026-07-06 已按用户反馈收敛策略：不继续复杂化 `touch-scroll`，优先考虑 Playwright 移动端 E2E harness。
+- 2026-07-07 已落地 Playwright 移动端 E2E harness；`npm run typecheck`、`npm run test`、`npm run test:e2e:mobile`、`npm run build:frontend` 和 `git diff --check` 已通过。沙箱内 Chromium 因 macOS Mach port 权限无法启动，E2E 需在沙箱外执行；`build:frontend` 后已恢复 `next-env.d.ts`。

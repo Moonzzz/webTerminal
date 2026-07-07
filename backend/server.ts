@@ -68,9 +68,14 @@ function isPublicRequest(rawUrl: string) {
   const url = new URL(rawUrl, 'http://localhost');
   return (
     url.pathname === '/login' ||
+    isE2ETestHarnessRequest(url.pathname) ||
     url.pathname.startsWith('/_next/') ||
     url.pathname === '/favicon.ico'
   );
+}
+
+function isE2ETestHarnessRequest(pathname: string) {
+  return process.env.WEBTERMINAL_E2E === '1' && pathname === '/terminal/test-harness';
 }
 
 function acceptsHtml(value: string | undefined) {

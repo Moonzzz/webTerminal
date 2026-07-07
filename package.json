@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
+    "test:e2e:mobile": "playwright test --project=mobile-chromium",
     "build": "npm run typecheck && npm run build:frontend && npm run build:backend",
     "build:frontend": "next build frontend",
     "build:backend": "node -e \"require('node:fs').rmSync('dist/backend',{recursive:true,force:true})\" && tsc -p tsconfig.backend.json",
@@ -27,6 +28,7 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/node": "^22.20.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
