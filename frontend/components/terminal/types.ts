@@ -54,5 +54,7 @@ export type ServerMessage =
   | { type: 'session'; sessionId: string; resumed?: boolean }
   | { type: 'status'; message: string }
   | { type: 'error'; message: string }
-  | { type: 'output'; data: string }
+  | { type: 'restore'; restoreId: string; data: string; sequence: number; cols: number; rows: number; scrollback: number }
+  | { type: 'restored'; restoreId: string; cols: number; rows: number }
+  | { type: 'output'; data: string; sequence: number }
   | { type: 'pong'; ts: number };

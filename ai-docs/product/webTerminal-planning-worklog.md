@@ -25,6 +25,11 @@ summary: webTerminal 功能规划与文档整理开发日志，记录已完成�
 
 ## 已完成
 
+### 2026-10-25：快照恢复
+
+- [x] 使用 headless xterm 快照恢复屏幕与有限滚动历史，再接收有序实时增量。
+- [x] 废弃原始输出回放及 `replayBufferBytes`：回放会重复展示下载进度等中间状态，无法直接恢复当前屏幕。
+
 ### 2026-06-23：规划与基础功能
 
 - [x] 梳理 webTerminal 原始需求和产品定位。
@@ -37,7 +42,7 @@ summary: webTerminal 功能规划与文档整理开发日志，记录已完成�
 - [x] 按节点 host 记住上次 port 和 username。
 - [x] 实现浏览器 ping、服务端 WebSocket ping、SSH keepalive。
 - [x] 实现前端输入缓冲。
-- [x] 实现单进程内存态会话恢复和有限输出回放。
+- [x] 实现单进程内存态会话恢复（恢复方式已更新为上述快照方案）。
 - [x] 启动脚本使用 `node --import tsx`，避免 `tsx` CLI 临时 IPC 依赖。
 
 相关文件：

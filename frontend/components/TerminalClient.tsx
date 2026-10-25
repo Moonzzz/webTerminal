@@ -65,6 +65,8 @@ export default function TerminalClient({
   const needsPassword = Boolean(storageLoaded && sessionTarget && !sessionTarget.password);
   const {
     blurTerminal,
+    connectionStatus,
+    terminalReady,
     containerRef,
     focusTerminal,
     pasteText: pasteTextToTerminal,
@@ -283,11 +285,14 @@ export default function TerminalClient({
       <div
         ref={containerRef}
         className="terminal-container"
+        data-ready={terminalReady}
+        aria-busy={!terminalReady}
         onTouchStart={handleTerminalTouchStart}
         onTouchMove={handleTerminalTouchMove}
         onTouchEnd={handleTerminalTouchEnd}
         onTouchCancel={handleTerminalTouchEnd}
       />
+      {connectionStatus ? <div className="terminal-status" role="status">{connectionStatus}</div> : null}
       {copyModeOpen ? <TerminalCopyOverlay text={copyModeText} onClose={closeCopyMode} /> : null}
       {storageLoaded && !needsPassword ? (
         <MobileTerminalToolbar

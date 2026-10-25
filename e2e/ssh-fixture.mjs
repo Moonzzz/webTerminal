@@ -13,7 +13,10 @@ const password = process.env.WEBTERMINAL_E2E_SSH_PASSWORD || 'mobile-e2e-passwor
 const state = {
   inputs: [],
   windowChanges: [],
+  sessionsOpened: 0,
 };
+
+let latestStream;
 
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const hostKey = privateKey.export({ type: 'pkcs1', format: 'pem' });
@@ -44,6 +47,8 @@ const sshServer = new SshServer({ hostKeys: [hostKey] }, (client) => {
 
       session.on('shell', (acceptShell) => {
         const stream = acceptShell();
+        latestStream = stream;
+        state.sessionsOpened += 1;
         stream.write('WEBTERMINAL_E2E_READY\r\n');
         for (let index = 1; index <= 180; index += 1) {
           stream.write(`WEBTERMINAL_E2E_LINE_${String(index).padStart(3, '0')}\r\n`);
@@ -66,6 +71,21 @@ const httpServer = createHttpServer(async (req, res) => {
   if (url.pathname === '/reset' && req.method === 'POST') {
     state.inputs = [];
     state.windowChanges = [];
+    state.sessionsOpened = 0;
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === '/output' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const { data, end = false } = JSON.parse(body);
+    if (end && latestStream) {
+      latestStream.exit(0);
+      latestStream.end(data);
+    } else {
+      latestStream?.write(data);
+    }
     sendJson(res, 200, { ok: true });
     return;
   }

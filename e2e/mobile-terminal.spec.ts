@@ -177,6 +177,114 @@ test('自定义快捷键刷新后保留并经真实 SSH 发送', async ({ page }
   await expect.poll(async () => (await readFixtureState()).inputs.join('')).toBe(text);
 });
 
+test('刷新恢复原 SSH 会话、最终进度与滚动历史，并继续接收新输出', async ({ page }) => {
+  await emitFixtureOutput('\r\nDOWNLOAD=0%\r\x1b[2KDOWNLOAD=50%\r\x1b[2KDOWNLOAD=100%');
+  await waitForTerminalText(page, 'DOWNLOAD=100%');
+  const sessionId = await storedSessionId(page);
+  expect((await readFixtureState()).sessionsOpened).toBe(1);
+
+  await page.reload();
+  // The SSH process continues writing while the browser waits for its password.
+  await emitFixtureOutput('\r\nOUTPUT_WHILE_DETACHED');
+  await page.setViewportSize({ width: 740, height: 412 });
+  await page.getByLabel('SSH 密码', { exact: true }).fill(E2E_SSH_PASSWORD);
+  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await expect(page.locator('.terminal-container')).toHaveAttribute('data-ready', 'true');
+  await waitForTerminalText(page, 'OUTPUT_WHILE_DETACHED');
+  expect(await readTerminalText(page)).toContain('DOWNLOAD=100%');
+  expect(await storedSessionId(page)).toBe(sessionId);
+  expect((await readFixtureState()).sessionsOpened).toBe(1);
+
+  await page.getByRole('button', { name: '选择 terminal 文本', exact: true }).tap();
+  const dialog = page.getByRole('dialog', { name: '选择 terminal 文本' });
+  await expect(dialog).toContainText('WEBTERMINAL_E2E_LINE_001');
+  await expect(dialog).toContainText('DOWNLOAD=100%');
+  await expect(dialog).not.toContainText('DOWNLOAD=0%');
+  await expect(dialog).not.toContainText('DOWNLOAD=50%');
+  await expect(dialog).not.toContainText('Connecting to');
+  await expect(dialog).not.toContainText('Session resumed');
+  await dialog.getByRole('button', { name: '关闭', exact: true }).tap();
+
+  await emitFixtureOutput('\r\nOUTPUT_AFTER_RESTORE');
+  await waitForTerminalText(page, 'OUTPUT_AFTER_RESTORE');
+  await tapShortcut(page, 'Tab');
+  await expect.poll(async () => (await readFixtureState()).inputs.join('')).toBe('\t');
+});
+
+test('备用屏幕刷新恢复后退出，主屏幕历史仍可复制', async ({ page }) => {
+  await emitFixtureOutput('\x1b[?1049h\x1b[HALT_SCREEN_READY\x1b[?2004h');
+  await waitForTerminalText(page, 'ALT_SCREEN_READY');
+  const sessionId = await storedSessionId(page);
+  await page.reload();
+  await page.getByLabel('SSH 密码', { exact: true }).fill(E2E_SSH_PASSWORD);
+  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await expect(page.locator('.terminal-container')).toHaveAttribute('data-ready', 'true');
+  await waitForTerminalText(page, 'ALT_SCREEN_READY');
+  expect(await storedSessionId(page)).toBe(sessionId);
+  expect((await readFixtureState()).sessionsOpened).toBe(1);
+  await emitFixtureOutput('\x1b[?1049l\r\nRETURNED_TO_SHELL');
+  await waitForTerminalText(page, 'RETURNED_TO_SHELL');
+  await page.getByRole('button', { name: '选择 terminal 文本', exact: true }).tap();
+  const dialog = page.getByRole('dialog', { name: '选择 terminal 文本' });
+  await expect(dialog).toContainText('WEBTERMINAL_E2E_LINE_001');
+  await expect(dialog).toContainText('RETURNED_TO_SHELL');
+  await expect(dialog).not.toContainText('ALT_SCREEN_READY');
+});
+
+test('鼠标滚轮在会话刷新前后均通过 SGR 格式到达 SSH 程序', async ({ browser, page: mobilePage }) => {
+  const context = await browser.newContext({
+    baseURL: new URL(mobilePage.url()).origin,
+    viewport: { width: 1280, height: 900 }, isMobile: false, hasTouch: false,
+  });
+  try {
+    const page = await context.newPage();
+    await openRuntimeTerminal(page, { mobile: false });
+    await emitFixtureOutput('\x1b[?1000h\x1b[?1006h\r\nMOUSE_MODE_READY');
+    await waitForTerminalText(page, 'MOUSE_MODE_READY');
+    await emitFixtureOutput('\x1b[?1000$p\x1b[?1006$p');
+    await expect.poll(async () => (await readFixtureState()).inputs.join('')).toContain('\x1b[?1006;1$y');
+    const wheel = async () => {
+      const box = await getBox(page.locator('.terminal-container .xterm-screen'));
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.wheel(0, -600);
+    };
+    await wheel();
+    await expect.poll(async () => (await readFixtureState()).inputs.join('')).toMatch(/\x1b\[<64;\d+;\d+M/);
+    const before = (await readFixtureState()).inputs.length;
+    await page.reload();
+    await page.getByLabel('SSH 密码', { exact: true }).fill(E2E_SSH_PASSWORD);
+    await page.getByRole('button', { name: '连接', exact: true }).click();
+    await expect(page.locator('.terminal-container')).toHaveAttribute('data-ready', 'true');
+    await waitForTerminalText(page, 'MOUSE_MODE_READY');
+    await wheel();
+    await expect.poll(async () => (await readFixtureState()).inputs.slice(before).join(''))
+      .toMatch(/\x1b\[<64;\d+;\d+M/);
+  } finally {
+    await context.close();
+  }
+});
+
+test('SSH 进程退出前的最后输出在连接关闭后仍完整显示', async ({ page }) => {
+  await emitFixtureOutput('\r\nFINAL_OUTPUT_BEFORE_EXIT', true);
+  await waitForTerminalText(page, 'FINAL_OUTPUT_BEFORE_EXIT');
+  await expect(page.getByRole('status')).toContainText('连接已断开');
+  await expect(page.locator('.terminal-container')).toHaveAttribute('data-ready', 'true');
+});
+
+async function emitFixtureOutput(data: string, end = false) {
+  const response = await fetch(`${E2E_FIXTURE_URL}/output`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data, end }),
+  });
+  expect(response.ok).toBe(true);
+}
+
+async function storedSessionId(page: Page) {
+  return page.evaluate(() => {
+    const key = Object.keys(sessionStorage).find((key) => key.startsWith('webTerminal-terminal-session:'));
+    return key ? sessionStorage.getItem(key) : null;
+  });
+}
+
 async function expectTerminalFitsAfterResize(page: Page, width: number) {
   for (const height of [900, 760, 620, 500, 621, 901]) {
     const beforeRows = await getTerminalRows(page);
@@ -345,6 +453,7 @@ async function resetFixture() {
 
 async function readFixtureState(): Promise<{
   inputs: string[];
+  sessionsOpened: number;
   windowChanges: Array<{ cols: number; rows: number }>;
 }> {
   const response = await fetch(`${E2E_FIXTURE_URL}/state`);
@@ -353,6 +462,7 @@ async function readFixtureState(): Promise<{
   }
   return response.json() as Promise<{
     inputs: string[];
+    sessionsOpened: number;
     windowChanges: Array<{ cols: number; rows: number }>;
   }>;
 }

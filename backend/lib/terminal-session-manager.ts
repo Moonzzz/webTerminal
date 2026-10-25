@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { getRuntimeConfig, isAllowedTarget } from './config';
 import { SshConnector, type SshTarget } from './ssh-connector';
 import type { TerminalTargetInput } from './terminal-protocol';
+import { TerminalState } from './terminal-state';
 
 export type TerminalPeer = {
   send: (payload: unknown) => void;
@@ -19,8 +20,6 @@ type CreateTerminalSessionParams = {
 type ResumeTerminalSessionParams = {
   sessionId: string;
   peer: TerminalPeer;
-  cols?: number;
-  rows?: number;
 };
 
 export type TerminalSessionHandle = {
@@ -28,6 +27,7 @@ export type TerminalSessionHandle = {
   write: (data: string) => void;
   resize: (cols: number, rows: number) => void;
   detach: (peer: TerminalPeer) => void;
+  completeRestore: (peer: TerminalPeer, restoreId: string, cols: number, rows: number) => void;
   close: () => void;
 };
 
@@ -71,8 +71,6 @@ export function createTerminalSession({
 export function resumeTerminalSession({
   sessionId,
   peer,
-  cols = 120,
-  rows = 30,
 }: ResumeTerminalSessionParams): TerminalSessionHandle | undefined {
   const session = sessions.get(sessionId);
   if (!session || session.isClosed()) {
@@ -80,7 +78,6 @@ export function resumeTerminalSession({
   }
 
   session.attach(peer, true);
-  session.resize(cols, rows);
   return session;
 }
 
@@ -89,8 +86,13 @@ class ManagedTerminalSession implements TerminalSessionHandle {
   private attachedPeer: TerminalPeer | null = null;
   private closeTimer: NodeJS.Timeout | undefined;
   private closed = false;
-  private replayChunks: Array<{ data: string; bytes: number }> = [];
-  private replayBytes = 0;
+  private ending = false;
+  private readonly state: TerminalState;
+  private outputEnabled = false;
+  private interactive = false;
+  private restoreAcknowledged = false;
+  private restoreId = '';
+  private restoreTimer: NodeJS.Timeout | undefined;
   private readonly config = getRuntimeConfig();
   private cols: number;
   private rows: number;
@@ -108,6 +110,12 @@ class ManagedTerminalSession implements TerminalSessionHandle {
     this.id = params.id;
     this.cols = params.cols;
     this.rows = params.rows;
+    this.state = new TerminalState(
+      params.cols,
+      params.rows,
+      this.config.ssh.scrollbackLines,
+      this.config.ssh.outputBufferBytes,
+    );
   }
 
   connect() {
@@ -123,12 +131,12 @@ class ManagedTerminalSession implements TerminalSessionHandle {
         this.sendJson({ type: 'error', message });
         this.close();
       },
-      onClose: () => this.close(),
+      onClose: () => this.finish(),
     });
     this.connector.connect();
   }
 
-  attach(peer: TerminalPeer, replay: boolean) {
+  attach(peer: TerminalPeer, resumed: boolean) {
     if (this.closed) {
       sendJson(peer, { type: 'error', message: 'Session already closed' });
       safeClose(peer);
@@ -145,14 +153,42 @@ class ManagedTerminalSession implements TerminalSessionHandle {
     }
 
     this.attachedPeer = peer;
-    sendJson(peer, { type: 'session', sessionId: this.id, resumed: replay });
-
-    if (replay) {
-      sendJson(peer, { type: 'status', message: 'Session resumed' });
-      for (const chunk of this.replayChunks) {
-        sendJson(peer, { type: 'output', data: chunk.data });
+    this.outputEnabled = false;
+    this.interactive = false;
+    this.restoreAcknowledged = false;
+    const restoreId = this.restoreId = randomUUID();
+    if (this.restoreTimer) clearTimeout(this.restoreTimer);
+    this.restoreTimer = setTimeout(() => {
+      if (this.attachedPeer === peer && this.restoreId === restoreId) {
+        this.detach(peer);
+        safeClose(peer);
       }
-    }
+    }, 30_000);
+    this.restoreTimer.unref();
+    sendJson(peer, { type: 'session', sessionId: this.id, resumed });
+    void this.state.snapshot((snapshot) => {
+      if (this.closed || this.attachedPeer !== peer || this.restoreId !== restoreId) return;
+      sendJson(peer, { type: 'restore', restoreId, ...snapshot });
+      this.outputEnabled = true;
+    }).catch((error: unknown) => this.fail(error));
+  }
+
+  completeRestore(peer: TerminalPeer, restoreId: string, cols: number, rows: number) {
+    if (
+      this.closed || this.attachedPeer !== peer || restoreId !== this.restoreId ||
+      this.restoreAcknowledged || !this.outputEnabled
+    ) return;
+    this.restoreAcknowledged = true;
+    void this.state.resize(cols, rows, () => {
+      if (this.closed || this.attachedPeer !== peer || restoreId !== this.restoreId) return;
+      this.cols = cols;
+      this.rows = rows;
+      this.connector?.resize(cols, rows);
+      this.interactive = true;
+      if (this.restoreTimer) clearTimeout(this.restoreTimer);
+      this.restoreTimer = undefined;
+      sendJson(peer, { type: 'restored', restoreId, cols, rows });
+    }, () => !this.closed && this.attachedPeer === peer && this.restoreId === restoreId).catch((error: unknown) => this.fail(error));
   }
 
   detach(peer: TerminalPeer) {
@@ -161,6 +197,10 @@ class ManagedTerminalSession implements TerminalSessionHandle {
     }
 
     this.attachedPeer = null;
+    this.outputEnabled = false;
+    this.interactive = false;
+    if (this.restoreTimer) clearTimeout(this.restoreTimer);
+    this.restoreTimer = undefined;
     this.closeTimer = setTimeout(() => {
       this.close();
     }, this.config.ssh.resumeTtlMs);
@@ -168,13 +208,19 @@ class ManagedTerminalSession implements TerminalSessionHandle {
   }
 
   write(data: string) {
-    this.connector?.write(data);
+    if (this.interactive && !this.ending) this.connector?.write(data);
   }
 
   resize(cols: number, rows: number) {
-    this.cols = cols;
-    this.rows = rows;
-    this.connector?.resize(cols, rows);
+    if (!this.interactive || this.closed) return;
+    const peer = this.attachedPeer;
+    const restoreId = this.restoreId;
+    void this.state.resize(cols, rows, () => {
+      this.cols = cols;
+      this.rows = rows;
+      this.connector?.resize(cols, rows);
+    }, () => !this.closed && this.attachedPeer === peer && this.restoreId === restoreId)
+      .catch((error: unknown) => this.fail(error));
   }
 
   close() {
@@ -188,6 +234,9 @@ class ManagedTerminalSession implements TerminalSessionHandle {
       this.closeTimer = undefined;
     }
 
+    if (this.restoreTimer) clearTimeout(this.restoreTimer);
+    this.restoreTimer = undefined;
+    this.state.dispose();
     this.connector?.close();
     this.connector = undefined;
 
@@ -198,39 +247,29 @@ class ManagedTerminalSession implements TerminalSessionHandle {
   }
 
   isClosed() {
-    return this.closed;
+    return this.closed || this.ending;
+  }
+
+  private finish() {
+    if (this.closed || this.ending) return;
+    this.ending = true;
+    void this.state.flush(() => this.close()).catch((error: unknown) => this.fail(error));
   }
 
   private sendOutput(data: string) {
-    this.addReplayChunk(data);
-    this.sendJson({ type: 'output', data });
+    void this.state.write(data, (output, sequence) => {
+      if (this.outputEnabled) this.sendJson({ type: 'output', data: output, sequence });
+    }).catch((error: unknown) => this.fail(error));
   }
 
   private sendJson(payload: unknown) {
-    if (this.attachedPeer) {
-      sendJson(this.attachedPeer, payload);
-    }
+    if (this.attachedPeer) sendJson(this.attachedPeer, payload);
   }
 
-  private addReplayChunk(data: string) {
-    let nextData = data;
-    let bytes = Buffer.byteLength(nextData);
-    const maxReplayBytes = this.config.ssh.replayBufferBytes;
-
-    if (bytes > maxReplayBytes) {
-      nextData = nextData.slice(-maxReplayBytes);
-      bytes = Buffer.byteLength(nextData);
-    }
-
-    this.replayChunks.push({ data: nextData, bytes });
-    this.replayBytes += bytes;
-
-    while (this.replayBytes > maxReplayBytes && this.replayChunks.length > 1) {
-      const removed = this.replayChunks.shift();
-      if (removed) {
-        this.replayBytes -= removed.bytes;
-      }
-    }
+  private fail(error: unknown) {
+    if (this.closed) return;
+    this.sendJson({ type: 'error', message: error instanceof Error ? error.message : 'Terminal state failed' });
+    this.close();
   }
 }
 

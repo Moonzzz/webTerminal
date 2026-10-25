@@ -126,8 +126,6 @@ export function setupWebSocketServer(
           session = resumeTerminalSession({
             sessionId: msg.resumeSessionId,
             peer,
-            cols: msg.cols,
-            rows: msg.rows,
           });
 
           if (session) {
@@ -157,7 +155,9 @@ export function setupWebSocketServer(
         return;
       }
 
-      if (msg.type === 'ping') {
+      if (msg.type === 'restore-ready') {
+        session.completeRestore(peer, msg.restoreId, msg.cols, msg.rows);
+      } else if (msg.type === 'ping') {
         peer.send({ type: 'pong', ts: Date.now() });
       } else if (msg.type === 'input') {
         if (msg.data) {

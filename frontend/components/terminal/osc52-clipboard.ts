@@ -3,8 +3,9 @@ import type { Terminal as XTermTerminal } from '@xterm/xterm';
 const OSC_52_CLIPBOARD = 52;
 const MAX_OSC_52_CLIPBOARD_CHARS = 1024 * 1024;
 
-export function registerOsc52ClipboardHandler(term: XTermTerminal) {
+export function registerOsc52ClipboardHandler(term: XTermTerminal, enabled: () => boolean = () => true) {
   return term.parser.registerOscHandler(OSC_52_CLIPBOARD, async (data) => {
+    if (!enabled()) return true;
     const clipboardText = parseOsc52ClipboardText(data);
     if (clipboardText === undefined) {
       return false;

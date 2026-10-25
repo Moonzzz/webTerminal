@@ -15,7 +15,8 @@
   "ssh": {
     "allowedTargets": "${WEBTERMINAL_ALLOWED_TARGETS:localhost:2022,localhost:22}",
     "resumeTtlMs": 300000,
-    "replayBufferBytes": 524288,
+    "scrollbackLines": 5000,
+    "outputBufferBytes": 4194304,
     "keepaliveIntervalMs": 20000,
     "keepaliveCountMax": 3
   },

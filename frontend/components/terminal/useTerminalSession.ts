@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Terminal as XTermTerminal } from '@xterm/xterm';
 import {
   decryptSecurePayload,
@@ -34,6 +34,8 @@ export function useTerminalSession({
   sessionTarget,
   storageLoaded,
 }: UseTerminalSessionParams) {
+  const [connectionStatus, setConnectionStatus] = useState('正在连接…');
+  const [terminalReady, setTerminalReady] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTermTerminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -41,6 +43,8 @@ export function useTerminalSession({
   useEffect(() => {
     if (!containerRef.current || !storageLoaded || needsPassword) return;
 
+    setTerminalReady(false);
+    setConnectionStatus('正在连接…');
     let disposed = false;
     let cleanup = () => {};
 
@@ -73,22 +77,24 @@ export function useTerminalSession({
       term.loadAddon(fitAddon);
       term.open(terminalContainer);
       fitAddon.fit();
-      focusXterm(term);
-      const disposeOsc52 = registerOsc52ClipboardHandler(term);
+      let sessionInitialized = false;
+      let connectionClosed = false;
+      const disposeOsc52 = registerOsc52ClipboardHandler(term, () => sessionInitialized);
       const disposeTouchScroll = setupMobileTouchScroll(terminalContainer, term);
 
       termRef.current = term;
+      cleanup = () => {
+        disposeTouchScroll.dispose();
+        disposeOsc52.dispose();
+        term.dispose();
+        termRef.current = null;
+      };
 
       const sessionNodeName = sessionTarget?.name || nodeName;
       const sessionStorageKey = getSessionStorageKey(sessionTarget);
 
       if (!sessionTarget) {
-        term.writeln('Missing SSH target. Return to the home page and enter node information again.');
-        cleanup = () => {
-          disposeTouchScroll.dispose();
-          disposeOsc52.dispose();
-          term.dispose();
-        };
+        setConnectionStatus('缺少 SSH 目标，请返回首页重新输入节点信息。');
         return;
       }
 
@@ -96,40 +102,32 @@ export function useTerminalSession({
       let secureSession: SecureSession;
       let pendingInput = '';
 
-      term.writeln(`Connecting to ${sessionNodeName}...`);
+      setConnectionStatus(`正在连接 ${sessionNodeName}…`);
 
       try {
         secureSession = await ensureSecureSession();
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : 'Secure channel failed';
-        term.writeln(`\r\n[ERROR] ${message}`);
-        cleanup = () => {
-          disposeTouchScroll.dispose();
-          disposeOsc52.dispose();
-          term.dispose();
-        };
+        if (!disposed) setConnectionStatus(`错误：${message}`);
         return;
       }
 
-      if (disposed) {
-        disposeTouchScroll.dispose();
-        disposeOsc52.dispose();
-        term.dispose();
-        return;
-      }
+      if (disposed) return;
 
       const ws = new WebSocket(`${protocol}://${window.location.host}/ws/terminal`);
       wsRef.current = ws;
       let serverSequence = 0;
       let sendQueue = Promise.resolve();
       let receiveQueue = Promise.resolve();
-      let sessionInitialized = false;
+      let outputSequence = 0;
+      let restoreId = '';
 
       const sendMessageNow = async (payload: unknown) => {
-        const activeWs = wsRef.current;
-        if (disposed || activeWs?.readyState !== WebSocket.OPEN) return;
+        if (disposed || connectionClosed || ws.readyState !== WebSocket.OPEN) return;
         const encrypted = await encryptSecurePayload(secureSession, 'ws:client', payload);
-        activeWs.send(JSON.stringify(encrypted));
+        if (!disposed && !connectionClosed && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(encrypted));
+        }
       };
 
       const enqueueMessage = (payload: unknown) => {
@@ -138,7 +136,7 @@ export function useTerminalSession({
           .then(() => sendMessageNow(payload))
           .catch((caught) => {
             const message = caught instanceof Error ? caught.message : 'Secure send failed';
-            term.writeln(`\r\n[ERROR] ${message}`);
+            if (!disposed) setConnectionStatus(`错误：${message}`);
             ws.close();
           });
         return sendQueue;
@@ -146,7 +144,7 @@ export function useTerminalSession({
 
       const flushInput = () => {
         const activeWs = wsRef.current;
-        if (!pendingInput || activeWs?.readyState !== WebSocket.OPEN) return;
+        if (!sessionInitialized || !pendingInput || activeWs?.readyState !== WebSocket.OPEN) return;
         if (activeWs.bufferedAmount > MAX_WS_BUFFERED_AMOUNT) return;
 
         const data = pendingInput;
@@ -162,7 +160,6 @@ export function useTerminalSession({
       ws.onopen = () => {
         void (async () => {
           fitAddon.fit();
-          focusXterm(term);
           const cols = term.cols || 120;
           const rows = term.rows || 30;
           const resumeSessionId = sessionStorageKey
@@ -177,11 +174,6 @@ export function useTerminalSession({
             cols,
             rows,
           });
-          sessionInitialized = true;
-          if (term.cols !== cols || term.rows !== rows) {
-            void enqueueMessage({ type: 'resize', cols: term.cols, rows: term.rows });
-          }
-          flushInput();
         })();
       };
 
@@ -189,6 +181,7 @@ export function useTerminalSession({
         receiveQueue = receiveQueue
           .catch(() => {})
           .then(async () => {
+            if (disposed || connectionClosed) return;
             const encrypted = JSON.parse(event.data);
             const decrypted = await decryptSecurePayload<ServerMessage>(
               secureSession,
@@ -196,39 +189,77 @@ export function useTerminalSession({
               'ws:server',
               serverSequence
             );
+            if (disposed || connectionClosed) return;
             serverSequence = decrypted.sequence;
             const msg = decrypted.payload;
 
             if (msg.type === 'ready') {
               return;
             }
-            if (msg.type === 'output') {
-              term.write(msg.data);
+            if (msg.type === 'restore') {
+              sessionInitialized = false;
+              setTerminalReady(false);
+              setConnectionStatus('正在恢复终端…');
+              restoreId = msg.restoreId;
+              term.reset();
+              term.options.scrollback = msg.scrollback;
+              term.resize(msg.cols, msg.rows);
+              await new Promise<void>((resolve) => term.write(msg.data, resolve));
+              if (disposed || connectionClosed) return;
+              outputSequence = msg.sequence;
+              const dimensions = fitAddon.proposeDimensions();
+              await enqueueMessage({ type: 'restore-ready', restoreId,
+                cols: dimensions?.cols || term.cols, rows: dimensions?.rows || term.rows });
+            } else if (msg.type === 'restored') {
+              if (msg.restoreId !== restoreId) throw new Error('Unexpected restore acknowledgement');
+              term.resize(msg.cols, msg.rows);
+              sessionInitialized = true;
+              setConnectionStatus('');
+              setTerminalReady(true);
+              fitAddon.fit();
+              focusXterm(term);
+            } else if (msg.type === 'output') {
+              if (!restoreId || msg.sequence !== outputSequence + 1) {
+                throw new Error('Terminal output sequence mismatch');
+              }
+              await new Promise<void>((resolve) => term.write(msg.data, resolve));
+              outputSequence = msg.sequence;
             } else if (msg.type === 'session') {
               if (sessionStorageKey) {
                 window.sessionStorage.setItem(sessionStorageKey, msg.sessionId);
               }
-              focusXterm(term);
+              setConnectionStatus(msg.resumed ? '正在恢复会话…' : '正在建立会话…');
             } else if (msg.type === 'pong') {
               return;
             } else if (msg.type === 'status') {
-              term.writeln(`\r\n[${msg.message}]`);
+              if (!sessionInitialized) setConnectionStatus(msg.message);
             } else if (msg.type === 'error') {
-              term.writeln(`\r\n[ERROR] ${msg.message}`);
+              setConnectionStatus(`错误：${msg.message}`);
             }
           })
           .catch((caught) => {
             const message = caught instanceof Error ? caught.message : 'Secure receive failed';
-            term.writeln(`\r\n[ERROR] ${message}`);
+            if (!disposed) setConnectionStatus(`错误：${message}`);
             ws.close();
           });
       };
 
       ws.onclose = () => {
-        term.writeln('\r\n[Disconnected]');
+        sessionInitialized = false;
+        pendingInput = '';
+        // A socket can close before its last encrypted messages finish parsing.
+        void receiveQueue.finally(() => {
+          connectionClosed = true;
+          sessionInitialized = false;
+          if (!disposed) {
+            if (restoreId) setTerminalReady(true);
+            setConnectionStatus((current) => current.startsWith('错误：') ? current : '连接已断开，可刷新页面恢复会话。');
+          }
+        });
       };
 
       const disposeData = term.onData((data) => {
+        if (!sessionInitialized || disposed || connectionClosed || ws.readyState !== WebSocket.OPEN) return;
         if (pendingInput.length + data.length > MAX_INPUT_BUFFER_CHARS) {
           pendingInput = pendingInput.slice(-Math.floor(MAX_INPUT_BUFFER_CHARS / 2));
         }
@@ -240,7 +271,7 @@ export function useTerminalSession({
       const onResize = () => {
         window.cancelAnimationFrame(resizeFrame);
         resizeFrame = window.requestAnimationFrame(() => {
-          if (!disposed) fitAddon.fit();
+          if (!disposed && sessionInitialized) fitAddon.fit();
         });
       };
 
@@ -253,6 +284,8 @@ export function useTerminalSession({
       });
 
       cleanup = () => {
+        connectionClosed = true;
+        sessionInitialized = false;
         window.clearInterval(inputFlushTimer);
         window.clearInterval(keepaliveTimer);
         window.cancelAnimationFrame(resizeFrame);
@@ -268,7 +301,10 @@ export function useTerminalSession({
       };
     }
 
-    startTerminal();
+    void startTerminal().catch((error: unknown) => {
+      if (!disposed) setConnectionStatus(`错误：${error instanceof Error ? error.message : '终端初始化失败'}`);
+      cleanup();
+    });
 
     return () => {
       disposed = true;
@@ -315,6 +351,8 @@ export function useTerminalSession({
   }, []);
 
   return {
+    connectionStatus,
+    terminalReady,
     blurTerminal,
     containerRef,
     focusTerminal,

@@ -115,5 +115,15 @@ address.
 - HTTP pages and `/ws/terminal` require the single-user login cookie.
 - Failed login attempts lock the source IP after 5 failures for 30 minutes by default.
 - The browser sends keepalive messages and the server also uses WebSocket/SSH keepalive.
-- After the browser disconnects or refreshes, the terminal can reconnect to the in-memory SSH session within the resume window and replay buffered output.
+- After the browser disconnects or refreshes, the terminal can reconnect to the in-memory SSH session within the resume window and restore the current screen and bounded scrollback using `@xterm/headless` and `@xterm/addon-serialize`, then continue with live output.
 - Development uses `node --import tsx` for the TypeScript backend; production runs compiled JavaScript from `dist/backend`.
+
+### Terminal state restoration
+
+Each SSH session maintains a headless xterm with the same terminal parsing options as the browser. Reconnecting loads a VT snapshot at its original dimensions, including scrollback, cursor, styles, modes and the active alternate screen. Output, snapshots and resizing are processed in order; live output carries a separate terminal sequence number. Input is enabled after the browser acknowledges parsing the snapshot and the server confirms the requested dimensions. Connection messages appear outside the terminal buffer.
+
+- `ssh.scrollbackLines`: retained history rows, default `5000` (range `0`–`50000`). History is restored together with the screen.
+- `ssh.outputBufferBytes`: maximum queued output and incomplete control sequence bytes, default `4194304` (range `65536`–`67108864`). Exceeding it closes the session with an error.
+- Restoration has a 30-second acknowledgement timeout; a timed-out browser is detached and the SSH session remains subject to the normal resume window.
+
+Incomplete VT instructions are held until complete, so snapshots never end inside a control sequence. Historical clipboard commands are not retained in the snapshot. Mouse encoding modes (`1006` SGR and `1016` SGR pixels), omitted by SerializeAddon 0.14, are queried from the headless emulator using DECRQM and appended to the snapshot so mouse-aware CLI applications retain working wheel input. The headless terminal is a passive state mirror and does not send duplicate terminal-query replies to SSH. The SSH process still depends on the running backend and the resume window; snapshots do not preserve a process across backend restarts.

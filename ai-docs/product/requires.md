@@ -13,7 +13,7 @@ summary: webTerminal 最简核心需求点。
 - 单用户认证：页面和 `/ws/terminal` 都必须登录，失败过多锁定来源 IP。
 - 安全通道：登录、会话补发和 WebSocket 业务帧需加密、加签、防重放。
 - SSH 密码：仅在 terminal 页面临时输入，不持久化、不进 URL、不写日志。
-- 会话恢复：刷新或断线后在恢复窗口内重连原 SSH 会话并回放有限输出。
+- 会话恢复：刷新或断线后在恢复窗口内重连原 SSH 会话，通过服务端终端状态快照恢复当前屏幕与有限滚动历史，并接收后续实时输出。
 - 保活与弱网：浏览器、WebSocket、SSH 保活；前端输入缓冲，连续输入不被发送延迟阻塞。
 - AI CLI 适配：稳定支持 Claude Code、Codex CLI、tmux 等 TUI/CLI，包含 resize、UTF-8、复制和快捷键场景。
 - 终端体验：页面简洁，terminal 占满视口，仅保留 xterm 内部滚动，SSH 密码提交后自动聚焦。

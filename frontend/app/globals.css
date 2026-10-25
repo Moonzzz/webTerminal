@@ -218,6 +218,24 @@ a {
   touch-action: none;
 }
 
+.terminal-container[data-ready="false"] .xterm {
+  visibility: hidden;
+}
+
+.terminal-status {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 10;
+  padding: 10px 12px;
+  border: 1px solid #334652;
+  border-radius: 8px;
+  background: #18222c;
+  color: #d6deeb;
+  overflow-wrap: anywhere;
+}
+
 .terminal-container .xterm {
   flex: 0 0 auto;
   width: 100%;

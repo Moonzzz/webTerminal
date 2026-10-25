@@ -15,6 +15,7 @@ export type ClientMessage =
       cols: number;
       rows: number;
     }
+  | { type: 'restore-ready'; restoreId: string; cols: number; rows: number }
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'ping' };
@@ -33,6 +34,17 @@ export function normalizeClientMessage(value: unknown): ClientMessage | undefine
       type: 'init',
       target: normalizeTarget(input.target),
       resumeSessionId: normalizeSessionId(input.resumeSessionId),
+      cols: normalizeSize(input.cols, 120),
+      rows: normalizeSize(input.rows, 30),
+    };
+  }
+
+  if (input.type === 'restore-ready') {
+    const restoreId = normalizeSessionId(input.restoreId);
+    if (!restoreId) return undefined;
+    return {
+      type: 'restore-ready',
+      restoreId,
       cols: normalizeSize(input.cols, 120),
       rows: normalizeSize(input.rows, 30),
     };

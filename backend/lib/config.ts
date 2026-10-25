@@ -23,7 +23,8 @@ export type RuntimeConfig = {
   ssh: {
     allowedTargets: AllowedTarget[];
     resumeTtlMs: number;
-    replayBufferBytes: number;
+    scrollbackLines: number;
+    outputBufferBytes: number;
     keepaliveIntervalMs: number;
     keepaliveCountMax: number;
   };
@@ -97,7 +98,8 @@ function normalizeConfig(value: Record<string, unknown>): RuntimeConfig {
     ssh: {
       allowedTargets: readAllowedTargets(ssh.allowedTargets),
       resumeTtlMs: readNumber(ssh, 'resumeTtlMs', 300000),
-      replayBufferBytes: readNumber(ssh, 'replayBufferBytes', 524288),
+      scrollbackLines: readInteger(ssh, 'scrollbackLines', 5000, 0, 50000),
+      outputBufferBytes: readInteger(ssh, 'outputBufferBytes', 4194304, 65536, 67108864),
       keepaliveIntervalMs: readNumber(ssh, 'keepaliveIntervalMs', 20000),
       keepaliveCountMax: readNumber(ssh, 'keepaliveCountMax', 3),
     },
@@ -193,4 +195,12 @@ function readBoolean(item: Record<string, unknown>, key: string, fallback: boole
 
 function normalizeHost(value: string) {
   return value.trim().toLowerCase();
+}
+
+function readInteger(item: Record<string, unknown>, key: string, fallback: number, min: number, max: number) {
+  const value = readNumber(item, key, fallback);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`Config field "${key}" must be an integer between ${min} and ${max}`);
+  }
+  return value;
 }
