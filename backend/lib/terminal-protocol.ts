@@ -1,24 +1,6 @@
-export type TerminalTargetInput = {
-  name?: string;
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-};
+import { TERMINAL_TRANSPORT_LIMITS, type ClientMessage, type TerminalTargetInput } from '../../shared/terminal-protocol';
 
-export type ClientMessage =
-  | { type: 'auth' }
-  | {
-      type: 'init';
-      target?: TerminalTargetInput;
-      resumeSessionId?: string;
-      cols: number;
-      rows: number;
-    }
-  | { type: 'restore-ready'; restoreId: string; cols: number; rows: number }
-  | { type: 'input'; data: string }
-  | { type: 'resize'; cols: number; rows: number }
-  | { type: 'ping' };
+export type { ClientMessage, TerminalTargetInput } from '../../shared/terminal-protocol';
 
 export function normalizeClientMessage(value: unknown): ClientMessage | undefined {
   if (!value || typeof value !== 'object') return undefined;
@@ -50,10 +32,17 @@ export function normalizeClientMessage(value: unknown): ClientMessage | undefine
     };
   }
 
+  if (input.type === 'terminal-reply') {
+    const restoreId = normalizeSessionId(input.restoreId);
+    if (!restoreId || typeof input.data !== 'string' || input.data.length > TERMINAL_TRANSPORT_LIMITS.maxInputChars) return undefined;
+    return { type: 'terminal-reply', restoreId, data: input.data };
+  }
+
   if (input.type === 'input') {
+    if (typeof input.data !== 'string' || input.data.length > TERMINAL_TRANSPORT_LIMITS.maxInputChars) return undefined;
     return {
       type: 'input',
-      data: typeof input.data === 'string' ? input.data : '',
+      data: input.data,
     };
   }
 

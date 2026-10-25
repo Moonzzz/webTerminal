@@ -76,24 +76,21 @@ PORT=8080 WEBTERMINAL_HOSTNAME=127.0.0.1 npm run start
 
 ## Docker
 
-Build an x86 Linux image:
+Build `webterminal:latest` for `linux/amd64`:
 
 ```bash
 npm run docker:build -- webterminal:latest
 ```
 
-The build script targets `linux/amd64` by default. On macOS it uses
-`docker buildx build --platform linux/amd64 --load`; on x86 Linux it uses
-`docker build --platform linux/amd64`.
-Docker npm install configures `npm_config_disturl` with
-`https://mirrors.ustc.edu.cn/node/` for Node.js distribution downloads used by
-native dependency builds.
+Build, verify startup, and export:
 
-The production image uses an Alpine runtime containing only the Node binary,
-its required system library, traced runtime dependencies, compiled backend,
-configuration, and the pruned Next.js build. It does not contain npm, Yarn,
-development dependencies, frontend source packages, build caches, source maps,
-or the complete project `node_modules` directory.
+```bash
+npm run docker:build -- webterminal:latest --phase all
+```
+
+`--phase all` checks `/login` and exports
+`dist/webterminal-latest-linux-amd64_yyyyMMdd_HHmmss.tar`.
+Failed verification skips export. The temporary container is removed on exit.
 
 Run the image:
 
@@ -127,3 +124,21 @@ Each SSH session maintains a headless xterm with the same terminal parsing optio
 - Restoration has a 30-second acknowledgement timeout; a timed-out browser is detached and the SSH session remains subject to the normal resume window.
 
 Incomplete VT instructions are held until complete, so snapshots never end inside a control sequence. Historical clipboard commands are not retained in the snapshot. Mouse encoding modes (`1006` SGR and `1016` SGR pixels), omitted by SerializeAddon 0.14, are queried from the headless emulator using DECRQM and appended to the snapshot so mouse-aware CLI applications retain working wheel input. The headless terminal is a passive state mirror and does not send duplicate terminal-query replies to SSH. The SSH process still depends on the running backend and the resume window; snapshots do not preserve a process across backend restarts.
+
+The restoration components have separate ownership:
+
+| Component | Responsibility |
+| --- | --- |
+| `shared/terminal-protocol.ts` | Browser/server message contract and transport limits |
+| `terminal-session-manager.ts` | Session registry, target policy and runtime settings injection |
+| `terminal-session.ts` | SSH lifetime, current attachment, restore phases and expiry |
+| `terminal-state.ts` | Ordered terminal parsing, snapshots and sequence boundaries |
+| `secure-terminal-transport.ts` | Bounded secure send/receive queues and socket lifetime |
+| `terminal-restore-controller.ts` | Snapshot/live parsing, dimensions and input permissions |
+| `useTerminalSession.ts` | Terminal/DOM lifetime and React bindings |
+
+Attachments progress through `snapshotting → awaiting-ready → resizing → interactive`. Every input, reply and queued resize is checked against the current attachment. Historical snapshot parsing suppresses replies and clipboard effects; live query replies during restoration use `terminal-reply` with the current restore ID, while user input stays disabled until `restored`.
+
+Browser transport queues admit at most 16 MiB or 2048 pending messages per direction, including the running task. WebSocket sends also check encrypted frame size against the 16 MiB socket buffer limit; the backend limits outstanding sends to 2048. A transport overflow disconnects the browser and retains SSH for the resume window. Input pending in the browser is limited to 64 Ki characters and fails explicitly on overflow. Intermediate terminal output and input are never silently trimmed. These transport limits are separate from the terminal parsing limit, which closes the SSH session on overflow.
+
+Backend compilation keeps the server at `dist/backend/server.js` and emits the shared contract under `dist/shared`. Production dependency tracing includes the shared runtime module.

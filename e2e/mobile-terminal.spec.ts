@@ -271,6 +271,59 @@ test('SSH 进程退出前的最后输出在连接关闭后仍完整显示', asyn
   await expect(page.locator('.terminal-container')).toHaveAttribute('data-ready', 'true');
 });
 
+test('恢复确认前能回复实时终端查询，同时阻止快捷键输入', async ({ page }) => {
+  let releaseReady!: () => void;
+  const readySeen = new Promise<void>((resolve) => { releaseReady = resolve; });
+  await page.routeWebSocket('**/ws/terminal', (client) => {
+    const server = client.connectToServer();
+    let sent = 0;
+    let readyFrame: string | Buffer | undefined;
+    client.onMessage((frame) => {
+      sent++;
+      if (sent === 3) {
+        // auth, init, restore-ready. Hold the acknowledgement so live output
+        // is parsed while the browser is still catching up at the old size.
+        readyFrame = frame;
+        releaseReady();
+        return;
+      }
+      if (readyFrame) {
+        // Preserve secure-envelope order when the query reply arrives.
+        server.send(readyFrame);
+        readyFrame = undefined;
+      }
+      server.send(frame);
+    });
+  });
+  await page.reload();
+  await page.getByLabel('SSH 密码', { exact: true }).fill(E2E_SSH_PASSWORD);
+  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await readySeen;
+  await expect(page.locator('.terminal-container')).toHaveAttribute('data-ready', 'false');
+  await tapShortcut(page, 'Tab');
+  await emitFixtureOutput('\r\nQUERY_DURING_RESTORE\x1b[5n');
+  await expect(page.locator('.terminal-container')).toHaveAttribute('data-ready', 'true');
+  await expect.poll(async () => (await readFixtureState()).inputs.join('')).toBe('\x1b[0n');
+  expect((await readFixtureState()).sessionsOpened).toBe(1);
+});
+
+test('超限粘贴明确断开浏览器，刷新仍恢复原 SSH 会话', async ({ page }) => {
+  const sessionId = await storedSessionId(page);
+  await page.getByRole('button', { name: '打开粘贴输入', exact: true }).tap();
+  await page.getByLabel('粘贴输入', { exact: true }).fill('x'.repeat(64 * 1024 + 1));
+  await page.getByRole('button', { name: '发送', exact: true }).tap();
+  await expect(page.getByRole('status')).toContainText('Terminal input backlog exceeds limit');
+  expect((await readFixtureState()).inputs).toEqual([]);
+  await page.reload();
+  await page.getByLabel('SSH 密码', { exact: true }).fill(E2E_SSH_PASSWORD);
+  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await expect(page.locator('.terminal-container')).toHaveAttribute('data-ready', 'true');
+  expect(await storedSessionId(page)).toBe(sessionId);
+  expect((await readFixtureState()).sessionsOpened).toBe(1);
+  await tapShortcut(page, 'Tab');
+  await expect.poll(async () => (await readFixtureState()).inputs.join('')).toBe('\t');
+});
+
 async function emitFixtureOutput(data: string, end = false) {
   const response = await fetch(`${E2E_FIXTURE_URL}/output`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data, end }),

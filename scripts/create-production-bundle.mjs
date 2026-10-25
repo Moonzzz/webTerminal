@@ -14,13 +14,13 @@ const dynamicRuntimeFiles = [
 process.chdir(projectRoot);
 await rm(outputDir, { recursive: true, force: true });
 
-const { fileList, warnings } = await nodeFileTrace([serverEntry], {
+const { fileList, warnings } = await nodeFileTrace([serverEntry, 'frontend/next.config.mjs'], {
   base: projectRoot,
   processCwd: projectRoot,
   conditions: ['node', 'production'],
   exportsOnly: true,
   ignore: [
-    'frontend/**/*',
+    'frontend/.next/**/*',
     'node_modules/**/*.d.ts',
     'node_modules/**/*.map',
     'node_modules/@img/**/*',

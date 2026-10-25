@@ -1,13 +1,8 @@
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 
-export type TerminalSnapshot = {
-  data: string;
-  sequence: number;
-  cols: number;
-  rows: number;
-  scrollback: number;
-};
+import type { TerminalSnapshot } from '../../shared/terminal-protocol';
+export type { TerminalSnapshot } from '../../shared/terminal-protocol';
 
 /** Keeps incomplete VT instructions out of snapshots; terminal interpretation stays in xterm. */
 class OutputFramer {
@@ -92,18 +87,7 @@ export class TerminalState {
 
   snapshot(publish: (snapshot: TerminalSnapshot) => void) {
     return this.enqueue(async () => {
-      // SerializeAddon 0.14 restores tracking but omits mouse encoding. Query
-      // the emulator through DECRQM instead of accessing xterm private fields.
-      let mouseEncoding = '';
-      const listener = this.terminal.onData((reply) => {
-        if (reply === '\x1b[?1006;1$y') mouseEncoding = '\x1b[?1006h';
-        if (reply === '\x1b[?1016;1$y') mouseEncoding = '\x1b[?1016h';
-      });
-      try {
-        await this.parse('\x1b[?1006$p\x1b[?1016$p');
-      } finally {
-        listener.dispose();
-      }
+      const mouseEncoding = await this.serializeMouseEncoding();
       if (this.disposed) return;
       publish({
         data: this.serializer.serialize({ scrollback: this.scrollback }) + mouseEncoding,
@@ -133,6 +117,22 @@ export class TerminalState {
     this.terminal.dispose();
     this.finishWrite?.();
     this.finishWrite = undefined;
+  }
+
+  private async serializeMouseEncoding() {
+    // SerializeAddon 0.14 omits mouse encoding. Use public DECRQM queries;
+    // these replies stay local to the state mirror and never reach SSH.
+    let encoding = '';
+    const listener = this.terminal.onData((reply) => {
+      if (reply === '\x1b[?1006;1$y') encoding = '\x1b[?1006h';
+      if (reply === '\x1b[?1016;1$y') encoding = '\x1b[?1016h';
+    });
+    try {
+      await this.parse('\x1b[?1006$p\x1b[?1016$p');
+      return encoding;
+    } finally {
+      listener.dispose();
+    }
   }
 
   private parse(data: string) {

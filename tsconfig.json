@@ -19,6 +19,6 @@
     },
     "plugins": [{ "name": "next" }]
   },
-  "include": ["backend/**/*.ts", "frontend/**/*.ts", "frontend/**/*.tsx", "frontend/.next/types/**/*.ts"],
+  "include": ["backend/**/*.ts", "shared/**/*.ts", "frontend/**/*.ts", "frontend/**/*.tsx", "frontend/.next/types/**/*.ts"],
   "exclude": ["node_modules"]
 }

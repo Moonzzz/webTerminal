@@ -16,6 +16,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY tsconfig.json tsconfig.backend.json ./
 COPY backend ./backend
+COPY shared ./shared
 COPY config ./config
 COPY frontend ./frontend
 

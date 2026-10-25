@@ -2,11 +2,12 @@ import WebSocket, { WebSocketServer } from 'ws';
 import type { Server as HttpServer, IncomingMessage } from 'http';
 import type { Server as HttpsServer } from 'https';
 import { createTerminalSession, resumeTerminalSession } from './terminal-session-manager';
-import type { TerminalPeer, TerminalSessionHandle } from './terminal-session-manager';
+import type { TerminalPeer, TerminalSessionHandle } from './terminal-session';
 import { normalizeClientMessage, type ClientMessage } from './terminal-protocol';
 import type { AuthService } from './auth';
 import type { RuntimeConfig } from './config';
 import { SecureChannelError, type SecureChannelService } from './secure-channel';
+import { TERMINAL_TRANSPORT_LIMITS } from '../../shared/terminal-protocol';
 
 type AliveWebSocket = WebSocket & {
   isAlive?: boolean;
@@ -22,6 +23,7 @@ export function setupWebSocketServer(
 ) {
   const wss = new WebSocketServer({
     noServer: true,
+    maxPayload: TERMINAL_TRANSPORT_LIMITS.maxPendingBytes,
   });
 
   const handleUpgrade = (req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer) => {
@@ -45,21 +47,44 @@ export function setupWebSocketServer(
     let session: TerminalSessionHandle | undefined;
     let secureSessionId: string | undefined;
     let secureAuthenticated = false;
+    let pendingFrames = 0;
+    let closing = false;
+    let terminateTimer: NodeJS.Timeout | undefined;
+    const disconnectSlowPeer = () => {
+      if (closing) return;
+      closing = true;
+      session?.detach(peer);
+      safeClose(ws, 1013, 'Terminal transport backlog exceeds limit');
+      // Do not retain a stalled socket's buffered frames indefinitely.
+      terminateTimer = setTimeout(() => ws.terminate(), 1000);
+      terminateTimer.unref();
+    };
     const peer: TerminalPeer = {
       send: (payload) => {
+        if (closing || ws.readyState !== WebSocket.OPEN) return;
         if (!secureSessionId) {
           safeClose(ws, 1008, 'Secure channel required');
           return;
         }
 
         try {
-          sendRaw(ws, secureChannel.encryptEnvelope(secureSessionId, 'ws:server', payload));
+          const frame = JSON.stringify(secureChannel.encryptEnvelope(secureSessionId, 'ws:server', payload));
+          if (ws.bufferedAmount + Buffer.byteLength(frame) > TERMINAL_TRANSPORT_LIMITS.maxPendingBytes ||
+            pendingFrames >= TERMINAL_TRANSPORT_LIMITS.maxPendingMessages) {
+            disconnectSlowPeer();
+            return;
+          }
+          pendingFrames++;
+          ws.send(frame, (error) => {
+            pendingFrames--;
+            if (error) disconnectSlowPeer();
+          });
         } catch {
           safeClose(ws, 1008, 'Secure channel expired');
         }
       },
       close: () => safeClose(ws),
-      isOpen: () => ws.readyState === WebSocket.OPEN,
+      isOpen: () => !closing && ws.readyState === WebSocket.OPEN,
     };
 
     ws.on('pong', () => {
@@ -67,6 +92,7 @@ export function setupWebSocketServer(
     });
 
     ws.on('message', (raw) => {
+      if (closing) return;
       let encrypted: unknown;
       try {
         encrypted = JSON.parse(raw.toString());
@@ -157,22 +183,27 @@ export function setupWebSocketServer(
 
       if (msg.type === 'restore-ready') {
         session.completeRestore(peer, msg.restoreId, msg.cols, msg.rows);
+      } else if (msg.type === 'terminal-reply') {
+        session.reply(peer, msg.restoreId, msg.data);
       } else if (msg.type === 'ping') {
         peer.send({ type: 'pong', ts: Date.now() });
       } else if (msg.type === 'input') {
         if (msg.data) {
-          session.write(msg.data);
+          session.write(peer, msg.data);
         }
       } else if (msg.type === 'resize') {
         if (Number.isFinite(msg.cols) && Number.isFinite(msg.rows)) {
-          session.resize(msg.cols, msg.rows);
+          session.resize(peer, msg.cols, msg.rows);
         }
       }
     });
 
     ws.on('close', () => {
+      closing = true;
+      if (terminateTimer) clearTimeout(terminateTimer);
       session?.detach(peer);
     });
+    ws.on('error', disconnectSlowPeer);
   });
 
   const heartbeat = setInterval(() => {
@@ -200,12 +231,6 @@ export function setupWebSocketServer(
 function isTerminalWebSocketRequest(rawUrl: string | undefined) {
   if (!rawUrl) return false;
   return new URL(rawUrl, 'http://localhost').pathname === TERMINAL_WEBSOCKET_PATH;
-}
-
-function sendRaw(ws: WebSocket, payload: unknown) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
-  }
 }
 
 function safeClose(ws: WebSocket, code?: number, reason?: string) {

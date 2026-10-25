@@ -45,10 +45,16 @@ Allowed SSH target
 | `backend/lib/secure-channel.ts` | RSA-OAEP 握手、AES-GCM、HMAC、防重放、安全会话内存管理 | 安全通道职责集中 |
 | `backend/lib/ws-server.ts` | `/ws/terminal` Upgrade、Cookie 鉴权、安全帧解密、协议分发、心跳 | 已避免拦截 Next HMR |
 | `backend/lib/terminal-protocol.ts` | 客户端消息归一化和基础尺寸/target 校验 | 协议校验从 WSS 中拆出 |
-| `backend/lib/terminal-session-manager.ts` | session Map、恢复 TTL、回放缓冲、attach/detach、allowList 校验 | 会话状态集中 |
+| `backend/lib/terminal-session-manager.ts` | session Map、allowList 校验、运行设置注入 | 注册表与单个会话分离 |
+| `backend/lib/terminal-session.ts` | SSH 生命周期、连接接管、恢复阶段、TTL | 不读取配置，不处理加密或网络缓冲 |
+| `backend/lib/terminal-state.ts` | headless xterm、有序快照与增量、尺寸调整 | 终端状态唯一来源 |
+| `shared/terminal-protocol.ts` | 双向消息类型与传输上限 | 无浏览器或 SSH 实现依赖 |
 | `backend/lib/ssh-connector.ts` | `ssh2` 连接、shell、输入、resize、keepalive、UTF-8 流式解码 | SSH 实现库隔离良好 |
 | `backend/lib/config.ts` | `server.json` 读取、环境变量占位、allowList 解析 | 简单有效，缺少生产安全断言 |
-| `frontend/components/TerminalClient.tsx` | xterm 生命周期、SSH 密码输入、WSS、安全通道、输入缓冲、resize、OSC 52 | 终端边界较集中 |
+| `frontend/components/TerminalClient.tsx` | SSH 密码与终端界面交互 | 界面容器 |
+| `frontend/components/terminal/useTerminalSession.ts` | xterm 与 DOM 生命周期、组件组装、React 状态绑定 | 不持有加解密队列或恢复状态机 |
+| `frontend/components/terminal/terminal-restore-controller.ts` | 快照与增量解析、尺寸屏障、输入权限 | 与传输和 React 分离 |
+| `frontend/components/terminal/secure-terminal-transport.ts` | 有界加密收发队列、输入缓冲、连接生命周期 | 不解释终端协议状态 |
 | `frontend/lib/secure-channel.ts` | 浏览器 Web Crypto 客户端 | 与后端协议重复但当前可接受 |
 
 当前工作区资源状态：
@@ -88,8 +94,8 @@ Allowed SSH target
 | WSS Cookie 鉴权 | 已实现 | 增加 Origin / Host 校验 |
 | SSH 密码临时输入 | 已实现 | 保持不持久化、不进 URL、不写日志 |
 | 会话恢复 | 已实现单进程内存恢复 | 增加配额、idle timeout、最大生命周期 |
-| 输出回放 | 已实现有限内存缓冲 | 保持可配置，不落盘 |
-| 保活 | 已实现浏览器 ping、服务端 ping、SSH keepalive | 增加慢消费断开策略 |
+| 状态恢复 | 已实现 headless 快照与有序增量 | 保持有限历史，不落盘 |
+| 保活与慢消费 | 已实现多层保活与传输积压超限断开 | 按真实吞吐评估更精细流控 |
 | 弱网输入缓冲 | 已实现 | 增加大段粘贴确认和分块 |
 | Claude/Codex CLI 适配 | 基础可用 | 补 tmux、快捷键说明、健康检查 |
 | OSC 52 复制 | 已实现前端处理 | 保持在 terminal 前端边界内 |
@@ -124,7 +130,7 @@ terminal gateway
   └─ WSS 鉴权、安全封包、协议分发、连接心跳
 
 session manager
-  └─ SSH session Map、恢复 TTL、回放缓冲、attach/detach、配额
+  └─ SSH session Map、目标策略、设置注入；单个会话负责恢复阶段和 TTL
 
 ssh connector
   └─ ssh2 连接、shell、resize、keepalive、host key 校验
@@ -189,7 +195,7 @@ secure client
 当前内存风险主要来自：
 
 - 每个 SSH 连接的 `ssh2` client 和 shell stream。
-- 每个会话的 replay buffer。
+- 每个会话的 headless 屏幕与有限滚动历史。
 - 安全会话 AES/HMAC key、序号、requestId 记录。
 - 登录失败 Map 与握手 Map。
 - Next 运行时。
@@ -197,8 +203,8 @@ secure client
 建议：
 
 - 设置 `maxSessionsGlobal`、`maxSessionsPerIp`、`maxSessionsPerUser`、`maxSessionsPerTarget`。
-- 保持 replay buffer 默认 512KiB，并允许降低到 128KiB 或 256KiB。
-- 当 WebSocket 发送缓冲过高时，对 SSH 输出做暂停、丢弃策略或断开 peer。
+- 滚动历史默认 5000 行，终端待解析输出默认 4MiB，传输积压单独限制。
+- WebSocket 发送积压或浏览器接收处理队列超限时断开 peer，不丢弃中间输出。
 - 慢浏览器长时间无法消费输出时，detach 浏览器连接，但保留 SSH 会话到恢复 TTL。
 - 不为会话恢复引入 Redis，除非同时设计 sticky session 或会话路由。
 
@@ -214,7 +220,7 @@ secure client
 
 建议：
 
-- 高输出时用 `requestAnimationFrame` 合批 `term.write`。
+- 高输出时保持解析完成回调和序号屏障；只有实测证明必要时再引入有界合批。
 - 大段粘贴分块并确认。
 - scrollback 默认保持 5000，仅允许显式配置提高。
 - 不引入大型 UI 框架、动画库或全局状态库。
@@ -249,7 +255,7 @@ secure client
 
 ### P2：弱网与高输出治理
 
-- 输出侧 backpressure。
+- 已补输出传输积压限制；后续按实测评估 SSH 流暂停与恢复。
 - 前端输出合批。
 - 大段粘贴确认和分块。
 - tmux 快捷入口。
@@ -274,3 +280,5 @@ secure client
 ## 最终结论
 
 当前架构应继续保持小而清晰：一个进程、一个配置入口、一条 WSS 终端通道、一个内存会话管理器。短期投入应集中在生产安全闭环和资源配额；中期再根据实测瓶颈决定是否替换 Next 前端或 Node Gateway。
+
+本次恢复机制的组件契约、阶段和验证记录见 [终端会话恢复架构优化方案](terminal-restoration-architecture-plan.md)。

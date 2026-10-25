@@ -7,12 +7,12 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "noEmit": false,
-    "outDir": "dist/backend",
+    "outDir": "dist",
     "plugins": [],
-    "rootDir": "backend",
+    "rootDir": ".",
     "sourceMap": true,
     "tsBuildInfoFile": "dist/.tsbuildinfo/backend.tsbuildinfo"
   },
-  "include": ["backend/**/*.ts"],
+  "include": ["backend/**/*.ts", "shared/**/*.ts"],
   "exclude": ["node_modules"]
 }

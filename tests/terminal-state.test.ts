@@ -209,3 +209,32 @@ test('连接被替换后取消旧连接排队的尺寸调整', async (t) => {
   const value = await snapshot(state);
   assert.deepEqual([value.cols, value.rows], [30, 5]);
 });
+
+test('不同分块边界下控制序列分帧与完整输入的终端状态一致', async () => {
+  const samples = [
+    'start\x1b[32mgreen\x1b[0m\r\nend',
+    'start\x1b]0;title\x1b\\\x1b[2;3Hend',
+    'start\x1bPignored\x1b\\\r\nend',
+    'start\x1b]0;cancel\x18end',
+    'start\x1b]0;title\x1b[32mend',
+  ];
+  for (const sample of samples) {
+    const baseline = new Terminal({ cols: 40, rows: 5, convertEol: true, scrollback: 5000, allowProposedApi: true });
+    try {
+      await write(baseline, sample);
+      for (let boundary = 0; boundary <= sample.length; boundary++) {
+        const state = new TerminalState(40, 5);
+        let term: Terminal | undefined;
+        try {
+          await state.write(sample.slice(0, boundary), ignoreOutput);
+          term = await restore(await snapshot(state));
+          await state.write(sample.slice(boundary), (output) => term!.write(output));
+          await write(term, '');
+          assert.deepEqual(lines(term), lines(baseline), `boundary=${boundary}`);
+          assert.equal(term.buffer.active.cursorX, baseline.buffer.active.cursorX);
+          assert.equal(term.buffer.active.cursorY, baseline.buffer.active.cursorY);
+        } finally { state.dispose(); term?.dispose(); }
+      }
+    } finally { baseline.dispose(); }
+  }
+});
