@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
-import type { ITerminalAddon, Terminal as XTermTerminal } from '@xterm/xterm';
+import type { Terminal as XTermTerminal } from '@xterm/xterm';
 import {
   decryptSecurePayload,
   encryptSecurePayload,
@@ -37,8 +37,6 @@ export function useTerminalSession({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTermTerminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const fitAddonRef = useRef<(ITerminalAddon & { fit: () => void }) | null>(null);
-  const resizeTerminalRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (!containerRef.current || !storageLoaded || needsPassword) return;
@@ -80,7 +78,6 @@ export function useTerminalSession({
       const disposeTouchScroll = setupMobileTouchScroll(terminalContainer, term);
 
       termRef.current = term;
-      fitAddonRef.current = fitAddon;
 
       const sessionNodeName = sessionTarget?.name || nodeName;
       const sessionStorageKey = getSessionStorageKey(sessionTarget);
@@ -126,6 +123,7 @@ export function useTerminalSession({
       let serverSequence = 0;
       let sendQueue = Promise.resolve();
       let receiveQueue = Promise.resolve();
+      let sessionInitialized = false;
 
       const sendMessageNow = async (payload: unknown) => {
         const activeWs = wsRef.current;
@@ -179,6 +177,10 @@ export function useTerminalSession({
             cols,
             rows,
           });
+          sessionInitialized = true;
+          if (term.cols !== cols || term.rows !== rows) {
+            void enqueueMessage({ type: 'resize', cols: term.cols, rows: term.rows });
+          }
           flushInput();
         })();
       };
@@ -238,36 +240,30 @@ export function useTerminalSession({
       const onResize = () => {
         window.cancelAnimationFrame(resizeFrame);
         resizeFrame = window.requestAnimationFrame(() => {
-          if (!fitAddonRef.current || !termRef.current || !wsRef.current) return;
-          fitAddonRef.current.fit();
-          if (wsRef.current.readyState !== WebSocket.OPEN) return;
-          void enqueueMessage({
-            type: 'resize',
-            cols: termRef.current.cols,
-            rows: termRef.current.rows,
-          });
+          if (!disposed) fitAddon.fit();
         });
       };
 
       const resizeObserver = new ResizeObserver(onResize);
       resizeObserver.observe(terminalContainer);
-      resizeTerminalRef.current = onResize;
-      window.addEventListener('resize', onResize);
+      const disposeResize = term.onResize(({ cols, rows }) => {
+        if (sessionInitialized && ws.readyState === WebSocket.OPEN) {
+          void enqueueMessage({ type: 'resize', cols, rows });
+        }
+      });
 
       cleanup = () => {
         window.clearInterval(inputFlushTimer);
         window.clearInterval(keepaliveTimer);
         window.cancelAnimationFrame(resizeFrame);
         resizeObserver.disconnect();
-        resizeTerminalRef.current = () => {};
-        window.removeEventListener('resize', onResize);
+        disposeResize.dispose();
         disposeData.dispose();
         disposeTouchScroll.dispose();
         disposeOsc52.dispose();
         ws.close();
         term.dispose();
         termRef.current = null;
-        fitAddonRef.current = null;
         wsRef.current = null;
       };
     }
@@ -308,10 +304,6 @@ export function useTerminalSession({
     }
   }, []);
 
-  const resizeTerminal = useCallback(() => {
-    resizeTerminalRef.current();
-  }, []);
-
   const readCopyText = useCallback(() => {
     const term = termRef.current;
     if (!term) return undefined;
@@ -328,7 +320,6 @@ export function useTerminalSession({
     focusTerminal,
     pasteText,
     readCopyText,
-    resizeTerminal,
     sendShortcutItem,
   };
 }

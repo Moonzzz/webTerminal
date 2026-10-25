@@ -123,6 +123,26 @@ test('终端触摸拖动后可见历史内容实际移动', async ({ page }) => 
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
 });
 
+test('移动端缩放后末行完整显示且透明余量小于一行', async ({ page }) => {
+  await expectTerminalFitsAfterResize(page, 412);
+});
+
+test('桌面端缩放后末行完整显示且透明余量小于一行', async ({ browser, page: mobilePage }) => {
+  const context = await browser.newContext({
+    baseURL: new URL(mobilePage.url()).origin,
+    viewport: { width: 1280, height: 900 },
+    isMobile: false,
+    hasTouch: false,
+  });
+  try {
+    const page = await context.newPage();
+    await openRuntimeTerminal(page, { mobile: false });
+    await expectTerminalFitsAfterResize(page, 1280);
+  } finally {
+    await context.close();
+  }
+});
+
 test('粘贴经真实 SSH 发送且复制模式包含终端历史', async ({ page }) => {
   const text = 'WEBTERMINAL_ACCEPTANCE_PASTE';
   await page.getByRole('button', { name: '打开粘贴输入', exact: true }).tap();
@@ -157,7 +177,39 @@ test('自定义快捷键刷新后保留并经真实 SSH 发送', async ({ page }
   await expect.poll(async () => (await readFixtureState()).inputs.join('')).toBe(text);
 });
 
-async function openRuntimeTerminal(page: Page) {
+async function expectTerminalFitsAfterResize(page: Page, width: number) {
+  for (const height of [900, 760, 620, 500, 621, 901]) {
+    const beforeRows = await getTerminalRows(page);
+    const beforeHeight = page.viewportSize()!.height;
+    await page.setViewportSize({ width, height });
+    if (Math.abs(height - beforeHeight) > 32) {
+      await expect.poll(() => getTerminalRows(page)).not.toBe(beforeRows);
+    }
+    await expect.poll(() => page.locator('.terminal-container').evaluate((container) => {
+      const box = container.getBoundingClientRect();
+      const screen = container.querySelector('.xterm-screen')!.getBoundingClientRect();
+      const lastRow = container.querySelector('.xterm-rows > div:last-child')!.getBoundingClientRect();
+      const xterm = container.querySelector('.xterm')!.getBoundingClientRect();
+      const buffer = getComputedStyle(container, '::after');
+      const remainingHeight = box.bottom - xterm.bottom;
+      return {
+        fits: Math.max(screen.bottom, lastRow.bottom) <= box.bottom + 0.5,
+        noFixedGap: xterm.top >= box.top - 0.5 && xterm.top <= box.top + 0.5 &&
+          remainingHeight >= -0.5 && remainingHeight < lastRow.height + 0.5,
+        bufferFillsRemainder: Math.abs(parseFloat(buffer.height) - remainingHeight) <= 0.5,
+        bufferIsTransparent: buffer.backgroundColor === 'rgba(0, 0, 0, 0)',
+      };
+    }), { message: `窗口 ${width}×${height} 下末行完整显示，透明块仅承接不足一行的余量` }).toEqual({
+      fits: true,
+      noFixedGap: true,
+      bufferFillsRemainder: true,
+      bufferIsTransparent: true,
+    });
+    await waitForTerminalText(page, 'WEBTERMINAL_E2E_PROMPT$');
+  }
+}
+
+async function openRuntimeTerminal(page: Page, { mobile = true }: { mobile?: boolean } = {}) {
   await page.goto('/');
   await page.evaluate(() => {
     window.localStorage.removeItem('webTerminal-node-memory');
@@ -180,7 +232,11 @@ async function openRuntimeTerminal(page: Page) {
   await page.getByRole('button', { name: '连接' }).click();
 
   await expect(page.locator('.terminal-container .xterm')).toBeVisible();
-  await expect(page.locator('.mobile-terminal-bar')).toBeVisible();
+  if (mobile) {
+    await expect(page.locator('.mobile-terminal-bar')).toBeVisible();
+  } else {
+    await expect(page.locator('.mobile-terminal-bar')).toBeHidden();
+  }
   await waitForTerminalText(page, 'WEBTERMINAL_E2E_PROMPT$');
   await waitForVisibleScrollback(page);
 }

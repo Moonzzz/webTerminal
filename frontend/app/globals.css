@@ -193,6 +193,8 @@ a {
 
 .terminal-client {
   position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -203,12 +205,13 @@ a {
 }
 
 .terminal-container {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  padding: 10px 10px 24px;
   box-sizing: border-box;
   background: #0f1419;
   overscroll-behavior: none;
@@ -216,8 +219,18 @@ a {
 }
 
 .terminal-container .xterm {
+  flex: 0 0 auto;
   width: 100%;
-  height: 100%;
+  height: auto;
+}
+
+/* Keep partial-row space below xterm without adding a fixed bottom gap. */
+.terminal-container::after {
+  content: '';
+  flex: 1 0 0;
+  min-height: 0;
+  background: transparent;
+  pointer-events: none;
 }
 
 .mobile-terminal-bar {
@@ -643,22 +656,6 @@ a {
     left: 0;
     width: var(--terminal-visual-viewport-width, 100vw);
     height: var(--terminal-visual-viewport-height, 100dvh);
-  }
-
-  .terminal-client {
-    display: grid;
-    grid-template-rows: minmax(0, 1fr) auto;
-    min-width: 0;
-  }
-
-  .terminal-container {
-    width: 100%;
-    min-height: 0;
-    min-width: 0;
-    height: 100%;
-    padding: 8px;
-    overscroll-behavior: none;
-    touch-action: none;
   }
 
   .terminal-container .xterm-screen,

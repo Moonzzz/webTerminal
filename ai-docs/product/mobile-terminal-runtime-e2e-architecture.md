@@ -41,6 +41,15 @@ summary: 移动端 terminal 架构收敛与运行时 E2E 修复方案，目标�
 
 它不再直接承载大段 xterm/WebSocket/session 生命周期闭包，也不直接实现 visualViewport 监听。
 
+### 终端布局与高度余量
+
+- 页面由 CSS 占满可用视口，`terminal-client` 使用 Grid 为终端和移动端工具栏分配空间。
+- `terminal-container` 无内边距，作为 FitAddon 的测量区域，内部使用纵向 Flex。
+- xterm 按整数行自然高度显示且不收缩；下方通过 `::after` 生成透明弹性块，承接不足一行的剩余高度。
+- 不增加固定底部留白、额外包装层或手动像素高度计算；透明块不参与鼠标交互。
+- 容器的 ResizeObserver 是布局变化触发 fit 的唯一持续入口；通过 requestAnimationFrame 合并调用。
+- xterm 的 `onResize` 在行列数实际变化后通知 SSH，初始化期间的尺寸变化在 init 后补齐。
+
 ### useTerminalSession
 
 新增 terminal session hook，封装：
@@ -57,7 +66,6 @@ summary: 移动端 terminal 架构收敛与运行时 E2E 修复方案，目标�
 - `sendShortcutItem(item, options?)`
 - `pasteText(text)`
 - `focusTerminal()`
-- `resizeTerminal()`
 - `readCopyText()`
 
 内部保留现有 `pendingInput`、`sendQueue`、`receiveQueue`、`disposed` 和 cleanup 顺序，避免拆分协议细节时引入重复连接或释放顺序问题。
@@ -68,7 +76,7 @@ summary: 移动端 terminal 架构收敛与运行时 E2E 修复方案，目标�
 
 - 监听 `window.visualViewport.resize` 和 `window.visualViewport.scroll`。
 - 向 `.terminal-page` 写入 `--terminal-visual-viewport-top`、`--terminal-visual-viewport-height`、`--terminal-visual-viewport-width`。
-- 调用传入的 `onViewportChange` 触发 xterm refit/resize。
+- 仅处理移动端可视视口的 CSS 变量兜底；容器尺寸变化由 ResizeObserver 感知，不直接触发 fit。
 - 卸载时清理 CSS 变量和 listener。
 
 生产代码只保留这一份 viewport 逻辑，避免页面和测试组件复制实现。

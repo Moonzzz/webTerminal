@@ -69,7 +69,6 @@ export default function TerminalClient({
     focusTerminal,
     pasteText: pasteTextToTerminal,
     readCopyText,
-    resizeTerminal,
     sendShortcutItem,
   } = useTerminalSession({
     needsPassword,
@@ -80,7 +79,6 @@ export default function TerminalClient({
 
   useTerminalViewport({
     anchorRef: containerRef,
-    onViewportChange: resizeTerminal,
   });
 
   useEffect(() => {

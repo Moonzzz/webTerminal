@@ -4,12 +4,10 @@ import { useEffect, type RefObject } from 'react';
 
 type UseTerminalViewportParams = {
   anchorRef: RefObject<HTMLElement | null>;
-  onViewportChange: () => void;
 };
 
 export function useTerminalViewport({
   anchorRef,
-  onViewportChange,
 }: UseTerminalViewportParams) {
   useEffect(() => {
     const pageElement = anchorRef.current?.closest<HTMLElement>('.terminal-page');
@@ -32,7 +30,6 @@ export function useTerminalViewport({
           '--terminal-visual-viewport-width',
           `${visualViewport.width}px`
         );
-        onViewportChange();
       });
     };
 
@@ -48,5 +45,5 @@ export function useTerminalViewport({
       pageElement.style.removeProperty('--terminal-visual-viewport-height');
       pageElement.style.removeProperty('--terminal-visual-viewport-width');
     };
-  }, [anchorRef, onViewportChange]);
+  }, [anchorRef]);
 }

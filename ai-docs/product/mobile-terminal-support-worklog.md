@@ -254,6 +254,23 @@ summary: webTerminal 移动端 terminal 支持探索日志，记录已确认事�
 - 自动化验收通过；系统软键盘、浏览器下拉刷新和惯性手感仍需真机复测。
 - 复验日志：`/private/tmp/webterminal-acceptance-fixed.log`。
 
+### 2026-10-25：修复窗口纵向缩放后的底部裁切
+
+- [x] 确认 FitAddon 按直接父容器总高度计算行数，未扣除该容器的 padding；桌面端 34px、移动端 16px 的垂直留白导致行数偏大，部分窗口高度下末行被 overflow 裁切。
+- [x] 新增外层 `terminal-frame` 承担原有留白，内部 `terminal-container` 无 padding，作为 FitAddon 的实际可用区域；保留 ResizeObserver、viewport 同步和后端 resize 流程。
+- [x] 新增桌面端和移动端 E2E，在 900、760、620、500、621、901px 高度间反复缩放，断言屏幕与最后一行底边未超出终端容器，且提示符仍可见。
+- [x] 全部 11 项 E2E 通过（25.5 秒），前后端生产构建、类型检查、现有单元测试及 diff 格式检查通过。
+- 验证日志：`/private/tmp/webterminal-resize-fix-e2e.log`。
+
+### 2026-10-25：简化布局并使用透明块承接不足一行的余量
+
+- [x] 移除上次修复引入的 `terminal-frame` 包装及桌面 24px、移动端 8px 的固定底部留白；桌面与移动端统一使用 Grid 分配终端和工具栏空间。
+- [x] `terminal-container` 保持无 padding 的测量区域，内部使用纵向 Flex；xterm 采用整数行自然高度，下方的透明 `::after` 弹性块自动吸收剩余空间，不手动计算余量。
+- [x] 删除重复的 window resize 监听、跨 hook 的 resize 回调及相关 ref；仅由容器 ResizeObserver 合帧调用 FitAddon，xterm `onResize` 在行列变化时同步 SSH，并处理 init 期间尺寸变化。
+- [x] visualViewport hook 只保留移动端键盘适配所需的 CSS 变量同步，不直接驱动终端 fit。
+- [x] 桌面及移动端多高度回归验证末行完整、透明块填满余量、余量小于一行、无固定顶部空隙；全部 11 项 E2E 通过（27.5 秒），前后端生产构建、类型检查、现有单元测试及 diff 检查通过。
+- 验证日志：`/private/tmp/webterminal-buffer-layout-e2e.log`。
+
 相关文件：
 
 - `package.json`
