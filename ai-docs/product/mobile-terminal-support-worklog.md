@@ -211,18 +211,68 @@ summary: webTerminal 移动端 terminal 支持探索日志，记录已确认事�
   - viewport 缩高后 xterm rows/cols 重新 fit。
 - [x] 记录测试限制：headless Chromium 中 synthetic wheel 有时不会被 xterm 内部滚动系统消费；测试页只对未被消费的 synthetic wheel 做 public API 镜像滚动，生产代码不受影响。
 
+### 2026-07-08：运行时 E2E 与架构收敛方案确认
+
+- [x] 复审最近移动端 terminal 改动后确认：源码 harness、测试全局变量和 synthetic wheel 补偿会削弱测试真实性，并增加业务源码维护成本。
+- [x] 确认后续策略调整为运行时验证优先：E2E 走真实 `/login`、首页和 terminal 页面，测试辅助只放在 `e2e/`、Playwright 配置或外部测试夹具中。
+- [x] 确认删除 `/terminal/test-harness`、`TerminalTestHarness` 和后端测试页放行，不再把测试指标挂到业务运行时全局变量。
+- [x] 确认前端按中等解耦推进：`TerminalClient` 收敛为页面编排层，新增 terminal session hook 和 visualViewport hook，`touch-scroll` 仅做 adapter 边界收敛，不重写真机已验证的核心手势算法。
+- [x] 新增 `mobile-terminal-runtime-e2e-architecture.md`，记录架构拆分、运行时 E2E 方案、清理项和验收标准。
+
+### 2026-07-08：运行时 E2E 与架构收敛实施
+
+- [x] 删除源码内 `/terminal/test-harness` 页面、`TerminalTestHarness` 组件和后端 E2E 测试页放行逻辑。
+- [x] 移动端 E2E 改为真实运行时路径：登录、首页填写自定义 SSH 目标、进入 `/terminal/custom`、输入 SSH 密码后验证 terminal 页面。
+- [x] 新增测试侧 SSH fixture 和运行时 server 启动脚本：Playwright 先构建前后端，再启动外部 SSH fixture 和生产模式后端服务，避免 dev watcher/`EMFILE`。
+- [x] E2E 测试辅助只保留在 `e2e/` 和 Playwright 配置中，不再在业务源码挂测试页面、测试全局变量或 synthetic wheel 补偿。
+- [x] 抽出 `useTerminalSession`，封装 xterm、FitAddon、OSC 52、安全通道、WebSocket、输入缓冲、keepalive、resize 和 cleanup。
+- [x] 抽出 `useTerminalViewport`，统一 visualViewport CSS 变量同步和 resize refit 触发。
+- [x] `TerminalClient` 收敛为页面编排层，保留目标读取、密码面板、快捷栏、粘贴、复制模式和触摸长按复制状态。
+- [x] `touch-scroll` 将 xterm DOM 查询边界收敛为 adapter，并修复 xterm 内部 textarea 被普通输入控件过滤导致 terminal touch-scroll 跳过的问题。
+- [x] 移除固定本机 dev origin 和个人 `.codex` 配置。
+- [x] 验证通过：`npm run typecheck`、`npm test`、`npm run test:e2e:mobile`。
+
+### 2026-10-25：按需求点执行功能验收
+
+- [x] 重新运行 `npm run typecheck`，通过；`npm test` 现有 1 项测试通过。
+- [x] 原有移动端 E2E 6 项全部通过：真实登录与 SSH 连接、布局、快捷栏横滑不误发、Tab 输入、触摸事件与页面防滚动、快速拖动 wheel 强度、viewport refit 与后端 resize。
+- [x] E2E 自动完成前后端生产构建并启动外部 SSH fixture，未出现 dev watcher/`EMFILE`。
+- [x] 新增中文命名的功能验收用例：复制/粘贴通过真实 SSH 验证，自定义快捷键刷新后保留并发送；两项通过。粘贴断言兼容终端显示自动换行，SSH 接收内容仍严格比较。
+- [x] 静态核对：业务源码无测试 harness 页面、旧测试全局变量；visualViewport 监听只在 hook 内实现；未提交改动未涉及终端协议、安全通道或 SSH session manager。
+- 首次验收实际触摸滚动未通过：Chromium 移动端模拟中，首个可见 fixture 行在触摸拖动前后均为 134；同位置原生 wheel 对照可滚至 133。原有 wheel 事件计数断言不能代替实际内容滚动验收，修复结果见下节。
+- 首次复核命令为 `npm run test:e2e:mobile -- --grep '终端触摸|粘贴经|自定义快捷键刷新'`，结果 2 项通过、1 项失败。
+- [ ] 系统软键盘、Edge/Chrome 下拉刷新和惯性体验仍需真机验收；模拟环境下的失败不能直接判定为所有真机均存在同样问题。
+- 验收结论：部分通过，不能标记整体验收完成；本轮只补充验收测试与记录，未修改生产行为或增加测试滚动补偿。
+- 首次验收日志：`/private/tmp/webterminal-acceptance-e2e.log`、`/private/tmp/webterminal-acceptance-supplement.log`。
+
+### 2026-10-25：修复合成滚轮兼容问题并完成自动化复验
+
+- [x] 独立 Chromium 实验确认：相同 `deltaY=-100`，合成事件的旧字段 `wheelDeltaY=-100`，原生事件的旧字段为 `120`；xterm 优先读取旧字段，导致触摸桥接方向与标准字段不一致，在终端底部被边界截断。
+- [x] 在 touch-to-wheel adapter 内屏蔽合成事件的旧 wheel delta 字段，使 xterm 按标准 `deltaY` 归一化；保留原有手势阈值、倍率、惯性算法及事件派发路径。
+- [x] 回归用例直接断言触摸双向拖动后可见历史行变化及页面未滚动，移除排查阶段的原生滚轮对照，不添加测试补偿或放宽实际滚动断言。
+- [x] `npm run test:e2e:mobile` 全部 9 项通过（22.5 秒），前后端生产构建通过；`npm run typecheck`、`npm test` 及 `git diff --check` 通过。
+- 自动化验收通过；系统软键盘、浏览器下拉刷新和惯性手感仍需真机复测。
+- 复验日志：`/private/tmp/webterminal-acceptance-fixed.log`。
+
 相关文件：
 
 - `package.json`
 - `package-lock.json`
 - `playwright.config.ts`
 - `mobile-terminal.spec.ts`
+- `run-runtime-server.mjs`
+- `ssh-fixture.mjs`
 - `page.tsx`
 - `TerminalTestHarness.tsx`
 - `server.ts`
+- `TerminalClient.tsx`
+- `useTerminalSession.ts`
+- `useTerminalViewport.ts`
+- `touch-scroll.ts`
 - `.gitignore`
 - `mobile-terminal-e2e-regression-plan.md`
 - `mobile-terminal-support-worklog.md`
+- `mobile-terminal-runtime-e2e-architecture.md`
 
 相关文件：
 

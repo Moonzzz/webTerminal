@@ -4,7 +4,6 @@ const nextConfig = {
     unoptimized: true,
   },
   poweredByHeader: false,
-  allowedDevOrigins: ["enkemacmini.local"],
 };
 
 export default nextConfig;

@@ -86,7 +86,7 @@ export function setupMobileTouchScroll(container: HTMLElement, term: XTermTermin
       verticalGesture = true;
     }
 
-    const scrollTarget = getTerminalScrollTarget(container);
+    const scrollTarget = getXtermScrollTarget(container);
     if (!scrollTarget) return;
 
     if (event.cancelable) {
@@ -109,7 +109,7 @@ export function setupMobileTouchScroll(container: HTMLElement, term: XTermTermin
   };
 
   const startMomentum = () => {
-    const scrollTarget = getTerminalScrollTarget(container);
+    const scrollTarget = getXtermScrollTarget(container);
     if (!scrollTarget || Math.abs(velocityY) < TOUCH_SCROLL_MOMENTUM_MIN_VELOCITY) {
       velocityY = 0;
       return;
@@ -163,12 +163,16 @@ export function isMobileTerminalTouch() {
 export function shouldIgnoreTouchTarget(target: EventTarget | null) {
   if (!(target instanceof Element)) return false;
 
+  if (target.closest('.xterm')) {
+    return false;
+  }
+
   return Boolean(
     target.closest('button, input, textarea, select, a, [contenteditable="true"], .mobile-terminal-bar')
   );
 }
 
-function getTerminalScrollTarget(container: HTMLElement) {
+function getXtermScrollTarget(container: HTMLElement) {
   return (
     container.querySelector<HTMLElement>('.xterm-scrollable-element') ||
     container.querySelector<HTMLElement>('.xterm-screen') ||
@@ -179,14 +183,21 @@ function getTerminalScrollTarget(container: HTMLElement) {
 function dispatchTerminalWheel(target: HTMLElement, deltaY: number) {
   const clampedDeltaY = clamp(deltaY, -TOUCH_SCROLL_DELTA_MAX, TOUCH_SCROLL_DELTA_MAX);
 
-  target.dispatchEvent(
-    new WheelEvent('wheel', {
-      bubbles: true,
-      cancelable: true,
-      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
-      deltaY: -clampedDeltaY * TOUCH_SCROLL_WHEEL_SCALE,
-    })
-  );
+  const event = new WheelEvent('wheel', {
+    bubbles: true,
+    cancelable: true,
+    deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    deltaY: -clampedDeltaY * TOUCH_SCROLL_WHEEL_SCALE,
+  });
+
+  // Chromium gives synthetic events legacy wheel deltas with the opposite
+  // convention to native events. Let xterm normalize the standard delta fields.
+  Object.defineProperties(event, {
+    wheelDeltaY: { value: undefined },
+    wheelDeltaX: { value: undefined },
+    wheelDelta: { value: undefined },
+  });
+  target.dispatchEvent(event);
 }
 
 function clamp(value: number, min: number, max: number) {
